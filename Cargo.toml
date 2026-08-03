@@ -1,0 +1,18 @@
+[package]
+name = "tumbleweed"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
+# Used only for SO_REUSEADDR on the mDNS port (5353) so the advertiser can
+# share the port with any OS mDNS responder.
+socket2 = "0.5"
+# Direct Windows APIs for the folder picker (incoming uploads).
+windows = { git = "https://github.com/microsoft/windows-rs", branch = "master", features = ["Storage_Pickers", "Storage_Search", "Storage_Streams", "winuser", "shobjidl_core", "minwindef", "windef"] }
+# Non-blocking wait on the picker's IAsyncOperation (Async::when).
+windows-future = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
+
+[build-dependencies]
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
+
