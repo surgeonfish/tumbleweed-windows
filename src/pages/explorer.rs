@@ -11,26 +11,15 @@ pub(crate) struct FsEntry {
     is_dir: bool,
 }
 
-/// Path to the app's settings file (`%LOCALAPPDATA%\tumbleweed\settings.ini`).
-fn settings_file() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
-    Path::new(&base).join("tumbleweed").join("settings.ini")
-}
-
 /// Remember the last folder the user opened so a future launch resumes there.
 pub(crate) fn save_last_folder(path: &Path) {
-    let file = settings_file();
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&file, format!("last_folder={}\n", path.display()));
+    crate::tools::settings_store::set("last_folder", &path.display().to_string());
 }
 
 /// The folder restored from settings, if it still exists.
 fn load_last_folder() -> Option<PathBuf> {
-    let text = std::fs::read_to_string(settings_file()).ok()?;
-    text.lines()
-        .find_map(|l| l.strip_prefix("last_folder=").map(PathBuf::from))
+    crate::tools::settings_store::get("last_folder")
+        .map(PathBuf::from)
         .filter(|p| p.is_dir())
 }
 

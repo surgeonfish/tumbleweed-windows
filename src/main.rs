@@ -14,6 +14,7 @@ use pages::transfer::{
     load_history, save_history, transfer_page, TransferAction, TransferDirection, TransferRecord,
 };
 use tools::mdns::DiscoveredDevice;
+use tools::settings_store::{load_theme, save_theme};
 use tools::transfer_progress::TransferProgress;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
 
@@ -170,8 +171,14 @@ fn app(cx: &mut RenderCx) -> Element {
     });
 
     // App theme (light / dark / follow system), selectable from Settings.
-    let (theme, set_theme) = cx.use_state(RequestedTheme::Default);
-    cx.use_effect((theme,), move || set_requested_theme(theme));
+    // Loaded from and saved back to the settings file.
+    let (theme, set_theme) = cx.use_state(load_theme());
+    cx.use_effect((theme,), {
+        move || {
+            set_requested_theme(theme);
+            save_theme(theme);
+        }
+    });
 
     // Selected sub-tab on the Transfer page (All / Downloads / Uploads).
     let (transfer_tab, set_transfer_tab) = cx.use_state("all".to_string());
