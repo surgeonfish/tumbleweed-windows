@@ -13,6 +13,21 @@ use pages::transfer::{transfer_page, TransferAction, TransferDirection, Transfer
 use tools::mdns::DiscoveredDevice;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
 
+/// One line for a discovered device in the footer dropdown: name, a type
+/// label when known (from the peer's HTTP `/info`), then its IP.
+fn device_text(d: &DiscoveredDevice) -> String {
+    let kind = match d.kind.as_str() {
+        "pc" => "PC",
+        "phone" => "Phone",
+        _ => "",
+    };
+    if kind.is_empty() {
+        format!("{}  ·  {}", d.name, d.ip)
+    } else {
+        format!("{}  ·  {}  ·  {}", d.name, kind, d.ip)
+    }
+}
+
 fn app(cx: &mut RenderCx) -> Element {
     let (page, set_page) = cx.use_state("explore".to_string());
     let (search_text, set_search_text) = cx.use_state(String::new());
@@ -69,9 +84,11 @@ fn app(cx: &mut RenderCx) -> Element {
     );
 
     // Incoming upload confirmation bridge (HTTP server thread -> UI thread).
-    let (incoming, set_incoming) = cx.use_async_state(None::<IncomingUpload>);
+    // Multiple concurrent transfers are queued; the UI confirms them one at a
+    // time from the front of the queue.
+    let (incoming, _set_incoming) = cx.use_async_state(Vec::<IncomingUpload>::new());
     cx.use_effect((), {
-        let set_incoming = set_incoming.clone();
+        let set_incoming = _set_incoming.clone();
         move || tools::upload_gate::install_upload_setter(set_incoming)
     });
 
@@ -186,12 +203,12 @@ fn app(cx: &mut RenderCx) -> Element {
         _ => settings_page(cx, theme, set_theme.clone()),
     };
 
-    // Confirm incoming uploads: show a dialog; if accepted, pick a folder.
-    let dialog = match &incoming {
+    // Confirm incoming uploads (front of the queue): show a dialog; if
+    // accepted, pick a folder. After the decision, advance to the next one.
+    let dialog = match incoming.first() {
         Some(upload) => {
-            let set_incoming = set_incoming.clone();
-            let incoming = incoming.clone();
             let dispatch_transfer = dispatch_transfer.clone();
+            let upload_id = upload.id;
             let upload_name = upload.name.clone();
             ContentDialog::new("Incoming upload")
                 .content(format!("{}  ·  {} bytes", upload.name, upload.size))
@@ -199,24 +216,21 @@ fn app(cx: &mut RenderCx) -> Element {
                 .close_button_text("Cancel")
                 .is_open(true)
                 .on_closed(move |r: ContentDialogResult| {
-                    let Some(upload) = incoming.as_ref() else { return };
                     if r == ContentDialogResult::Primary {
                         // Accepted — record the incoming transfer as downloaded.
                         dispatch_transfer
                             .call(TransferAction::MarkDownloaded(upload_name.clone()));
-                        let id = upload.id;
-                        let set_incoming = set_incoming.clone();
                         tools::picker::pick_folder(move |dir| {
                             let decision = match dir {
                                 Some(path) => UploadDecision::Save(path),
                                 None => UploadDecision::Reject,
                             };
-                            tools::upload_gate::reply(id, decision);
-                            set_incoming.call(None);
+                            tools::upload_gate::reply(upload_id, decision);
+                            tools::upload_gate::advance();
                         });
                     } else {
-                        tools::upload_gate::reply(upload.id, UploadDecision::Reject);
-                        set_incoming.call(None);
+                        tools::upload_gate::reply(upload_id, UploadDecision::Reject);
+                        tools::upload_gate::advance();
                     }
                 })
         }
@@ -229,7 +243,7 @@ fn app(cx: &mut RenderCx) -> Element {
     // once one or more are discovered, show the numeric InfoBadge instead.
     let device_label = selected_device
         .as_ref()
-        .map(|d| format!("{}  ·  {}", d.name, d.ip))
+        .map(device_text)
         .unwrap_or_else(|| "Devices".to_string());
 
     let count_badge: Element = if devices.is_empty() {
@@ -246,17 +260,14 @@ fn app(cx: &mut RenderCx) -> Element {
             .menu_flyout(
                 devices
                     .iter()
-                    .map(|d| menu_item(format!("{}  ·  {}", d.name, d.ip)))
+                    .map(|d| menu_item(device_text(d)))
                     .collect(),
             )
             .on_item_clicked({
                 let devices = devices.clone();
                 let set_selected_device = set_selected_device.clone();
                 move |text: String| {
-                    if let Some(d) = devices
-                        .iter()
-                        .find(|d| format!("{}  ·  {}", d.name, d.ip) == text)
-                    {
+                    if let Some(d) = devices.iter().find(|d| device_text(d) == text) {
                         set_selected_device.call(Some(d.clone()));
                     }
                 }
@@ -294,7 +305,8 @@ fn main() -> Result<()> {
     std::thread::spawn(|| {
         let host = tools::mdns::device_hostname();
         if let Err(e) = tools::mdns::advertise(&host, tools::server::HTTP_PORT) {
-            println!("[mdns] advertise error: {e}");
+            // No console in GUI-subsystem builds, so log to a file instead.
+            tools::mdns::log_msg(&format!("[mdns] advertise error: {e}"));
         }
     });
     std::thread::spawn(|| {

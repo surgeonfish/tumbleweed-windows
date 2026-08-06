@@ -300,7 +300,7 @@ fn service_instance(host: &str) -> String {
     format!("{}._tcp.local", host.trim_end_matches(".local"))
 }
 
-/// Build the PTR + SRV + A answers that advertise this device.
+/// Build the PTR + SRV + TXT + A answers that advertise this device.
 fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Answer> {
     let instance = service_instance(name);
     let service = service_type(name);
@@ -308,7 +308,7 @@ fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Ans
 
     // PTR: _tumbleweed._tcp.local -> tumbleweed._tcp.local
     answers.push(Answer {
-        name: service.clone(),
+        name: service,
         rtype: 12, // PTR
         class: 1,
         ttl: 120,
@@ -321,11 +321,20 @@ fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Ans
     srv.extend_from_slice(&service_port.to_be_bytes());
     srv.extend_from_slice(&encode_name(name));
     answers.push(Answer {
-        name: instance,
+        name: instance.clone(),
         rtype: 33, // SRV
         class: 1,
         ttl: 120,
         rdata: srv,
+    });
+    // TXT: Android NsdManager refuses to resolve a service without a TXT
+    // record, so always advertise one (txtvers is the conventional first key).
+    answers.push(Answer {
+        name: instance.clone(),
+        rtype: 16, // TXT
+        class: 1,
+        ttl: 120,
+        rdata: b"\x08txtvers=1".to_vec(),
     });
     // A: tumbleweed.local -> ip (unique, cache-flush)
     for ip in addrs {
@@ -403,11 +412,19 @@ fn response_for_query(
         srv.extend_from_slice(&service_port.to_be_bytes());
         srv.extend_from_slice(&encode_name(name));
         answers.push(Answer {
-            name: instance,
+            name: instance.clone(),
             rtype: 33,
             class: 1,
             ttl: 120,
             rdata: srv,
+        });
+        // Android NsdManager needs a TXT record to resolve the service.
+        answers.push(Answer {
+            name: instance.clone(),
+            rtype: 16,
+            class: 1,
+            ttl: 120,
+            rdata: b"\x08txtvers=1".to_vec(),
         });
     }
 
@@ -449,17 +466,97 @@ fn local_ipv4_addrs() -> Vec<Ipv4Addr> {
     addrs
 }
 
+/// Write a line to a log file (`%TEMP%\tumbleweed-mdns.log`) so GUI-subsystem
+/// builds (which have no console) still surface mDNS status and errors.
+pub(crate) fn log_msg(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("tumbleweed-mdns.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 /// Bind the mDNS responder socket on port 5353 with `SO_REUSEADDR` so it can
 /// share the port with any OS mDNS responder, and join the multicast group.
-fn bind_mdns_socket() -> io::Result<UdpSocket> {
+/// `iface` is the LAN IPv4 used as the multicast egress interface.
+fn bind_mdns_socket(iface: Ipv4Addr) -> io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_multicast_ttl_v4(255)?;
     socket.set_multicast_loop_v4(true)?;
+    socket.set_multicast_if_v4(&iface)?;
     socket.bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), MDNS_PORT).into())?;
-    socket.join_multicast_v4(&MDNS_GROUP, &Ipv4Addr::UNSPECIFIED)?;
+    // Join the group on the specific LAN interface (not the OS default), so a
+    // machine with multiple adapters reliably receives LAN multicast.
+    socket.join_multicast_v4(&MDNS_GROUP, &iface)?;
     Ok(socket.into())
+}
+
+/// Bind a socket for sending multicast announcements from an *ephemeral* port
+/// with the multicast egress pinned to `iface`. Android's NsdManager discovers
+/// unsolicited announcements sent this way, but ignores ones sourced from port
+/// 5353 (and multicast sent out a virtual adapter never reaches the LAN).
+fn bind_announcer(iface: Ipv4Addr) -> io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_multicast_ttl_v4(255)?;
+    socket.set_multicast_loop_v4(true)?;
+    socket.set_multicast_if_v4(&iface)?;
+    socket.bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).into())?;
+    Ok(socket.into())
+}
+
+/// How long a discovered peer is considered alive without a new packet.
+const PEER_TTL: Duration = Duration::from_secs(15);
+
+/// Peers discovered on the LAN, maintained by the advertiser thread from the
+/// packets it already receives on its single mDNS socket (see
+/// [`record_peer_packet`]). Keyed by IP with a last-seen timestamp.
+static PEERS: std::sync::OnceLock<
+    std::sync::Mutex<Vec<(DiscoveredDevice, std::time::Instant)>>,
+> = std::sync::OnceLock::new();
+
+fn peers() -> &'static std::sync::Mutex<Vec<(DiscoveredDevice, std::time::Instant)>> {
+    PEERS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Record any peer devices advertised in `pkt` (PTR instance + A records) into
+/// the shared registry, pruning entries that have gone stale.
+fn record_peer_packet(pkt: &[u8]) {
+    let (instances, ips) = parse_discovery_response(pkt);
+    if ips.is_empty() {
+        return;
+    }
+    let own_ips = local_ipv4_addrs();
+    let now = std::time::Instant::now();
+    if let Ok(mut guard) = peers().lock() {
+        for (i, ip) in ips.iter().enumerate() {
+            if let IpAddr::V4(v4) = ip {
+                if own_ips.contains(v4) {
+                    continue;
+                }
+            }
+            let name = instances
+                .get(i)
+                .or_else(|| instances.first())
+                .cloned()
+                .unwrap_or_else(|| "tumbleweed".to_string());
+            let name = display_name(&name);
+            match guard.iter_mut().find(|e| e.0.ip == *ip) {
+                Some(e) => {
+                    e.0.name = name;
+                    e.1 = now;
+                }
+                None => guard.push((DiscoveredDevice { name, ip: *ip, kind: String::new() }, now)),
+            }
+        }
+        guard.retain(|e| e.1.elapsed() < PEER_TTL);
+    }
 }
 
 /// Advertise `name` (e.g. `"tumbleweed.local"`) over mDNS and answer queries,
@@ -467,8 +564,12 @@ fn bind_mdns_socket() -> io::Result<UdpSocket> {
 /// service (`_tumbleweed._tcp.local`) so other tumbleweed apps can discover it.
 ///
 /// `service_port` is the TCP port of the HTTP file server (used in the SRV
-/// record). Sends an initial announcement, re-announces every few seconds, and
+/// record). Sends an initial announcement, re-announces periodically, and
 /// responds to incoming queries. Blocking — run on its own thread.
+///
+/// Announcements and query responses are sent from the standard mDNS port
+/// (5353) when it can be bound; if that port is taken, an ephemeral socket is
+/// used for announcement-only mode so devices still learn of us.
 pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
     let name = name.trim_end_matches('.');
     let addrs = local_ipv4_addrs();
@@ -478,33 +579,61 @@ pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
             "no usable IPv4 address to advertise",
         ));
     }
+    let iface = addrs[0];
 
-    let socket = bind_mdns_socket()?;
+    // Prefer the standard mDNS port: announce and answer queries from it. If
+    // it's already taken (e.g. by the OS mDNS responder), fall back to an
+    // ephemeral socket that can at least send announcements.
+    let (socket, standard) = match bind_mdns_socket(iface) {
+        Ok(s) => (s, true),
+        Err(e) => {
+            log_msg(&format!(
+                "[mdns] could not bind 5353 ({e}); using ephemeral announcement-only mode"
+            ));
+            (bind_announcer(iface)?, false)
+        }
+    };
 
     let announce = build_announcement(name, service_port, &addrs);
     socket.send_to(&announce, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT))?;
-    println!("[mdns] advertising {name} at {addrs:?} (service {})", service_type(name));
+    log_msg(&format!(
+        "[mdns] advertising {name} at {addrs:?} (service {}) standard_5353={standard}",
+        service_type(name)
+    ));
 
     let mut buf = [0u8; 4096];
     let mut last_announce = std::time::Instant::now();
+    let probe = build_query(&service_type(name), 12);
+    let group = SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT);
     loop {
-        socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-        match socket.recv_from(&mut buf) {
-            Ok((len, src)) => {
-                if let Some((resp, dest)) =
-                    response_for_query(&buf[..len], name, service_port, &addrs, src)
-                {
-                    let _ = socket.send_to(&resp, dest);
+        if standard {
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
+            match socket.recv_from(&mut buf) {
+                Ok((len, src)) => {
+                    // This socket sees every peer's multicast announcements and
+                    // replies — record them so the UI's device list stays fresh
+                    // without a second (starved) 5353 socket.
+                    record_peer_packet(&buf[..len]);
+                    if let Some((resp, dest)) =
+                        response_for_query(&buf[..len], name, service_port, &addrs, src)
+                    {
+                        let _ = socket.send_to(&resp, dest);
+                    }
                 }
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut => {}
+                // Never let a responder hiccup kill the advertiser.
+                Err(e) => log_msg(&format!("[mdns] responder recv error (continuing): {e}")),
             }
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(e),
+        } else {
+            std::thread::sleep(Duration::from_millis(500));
         }
-        // Re-announce periodically so new clients on the network learn of us.
-        if last_announce.elapsed() >= Duration::from_secs(10) {
-            let _ = socket.send_to(&announce, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT));
+        // Re-announce often enough that clients reliably learn of us, and probe
+        // for other responders so we discover query-only peers too.
+        if last_announce.elapsed() >= Duration::from_secs(3) {
+            let _ = socket.send_to(&announce, group);
+            let _ = socket.send_to(&probe, group);
             last_announce = std::time::Instant::now();
         }
     }
@@ -519,6 +648,9 @@ pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
 pub struct DiscoveredDevice {
     pub name: String,
     pub ip: IpAddr,
+    /// Device type reported over HTTP (`/info`): "pc", "phone" or "" while
+    /// unknown/pending.
+    pub kind: String,
 }
 
 /// A unique, per-machine `.local` hostname, e.g. `tumbleweed-desktop-abc123.local`.
@@ -552,11 +684,18 @@ fn sanitize_label(s: &str) -> Option<String> {
     }
 }
 
-/// Strip the `._tcp.local` / `.local` suffix for a clean display name.
+/// Strip the `tumbleweed-` prefix and the `._tumbleweed._tcp.local` /
+/// `._tcp.local` / `.local` suffix for a clean display name
+/// (e.g. `tumbleweed-oneplus-8t._tumbleweed._tcp.local` -> `oneplus-8t`).
 fn display_name(instance: &str) -> String {
-    instance
+    let trimmed = instance
+        .trim_end_matches("._tumbleweed._tcp.local")
         .trim_end_matches("._tcp.local")
         .trim_end_matches(".local")
+        .trim_end_matches('.');
+    trimmed
+        .strip_prefix("tumbleweed-")
+        .unwrap_or(trimmed)
         .to_string()
 }
 
@@ -564,62 +703,56 @@ fn display_name(instance: &str) -> String {
 /// service type and collecting each responder's advertised host IP. Blocks
 /// for up to `timeout` — call it on a background thread.
 pub fn discover_devices(timeout: Duration) -> io::Result<Vec<DiscoveredDevice>> {
+    // Send a PTR query to prompt responders, then return the snapshot the
+    // advertiser thread maintains from its single 5353 socket (which sees all
+    // multicast — a second 5353 socket in the same process would be starved by
+    // Windows). The snapshot is updated continuously by `record_peer_packet`.
+    let _ = timeout;
     let service = service_type("tumbleweed.local");
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    socket.set_multicast_ttl_v4(255)?;
-    let _ = socket.join_multicast_v4(&MDNS_GROUP, &Ipv4Addr::UNSPECIFIED);
-
-    // Don't list this machine's own advertisement.
-    let own_ips = local_ipv4_addrs();
-
-    // PTR query (QU bit set -> unicast replies come back to us).
     let query = build_query(&service, 12);
-    socket.send_to(&query, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT))?;
-
-    let deadline = std::time::Instant::now() + timeout;
-    let mut devices: Vec<DiscoveredDevice> = Vec::new();
-    let mut buf = [0u8; 4096];
-
-    loop {
-        let now = std::time::Instant::now();
-        if now >= deadline {
-            break;
+    if let Ok(s) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
+        let _ = s.send_to(&query, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT));
+    }
+    // Give responders a moment to answer (the advertiser thread records them).
+    std::thread::sleep(Duration::from_millis(250));
+    let mut snapshot: Vec<DiscoveredDevice> = peers()
+        .lock()
+        .map(|g| g.iter().map(|e| e.0.clone()).collect())
+        .unwrap_or_default();
+    // Ask each newly seen peer what kind of device it is over HTTP (`/info`),
+    // caching the answer in the shared registry so we only fetch each peer
+    // once (not every poll).
+    for d in snapshot.iter_mut() {
+        if !d.kind.is_empty() {
+            continue;
         }
-        socket.set_read_timeout(Some(deadline - now))?;
-        let (len, _src) = match socket.recv_from(&mut buf) {
-            Ok(v) => v,
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                break
-            }
-            Err(e) => return Err(e),
-        };
-        let (instances, ips) = parse_discovery_response(&buf[..len]);
-        for (i, ip) in ips.iter().enumerate() {
-            // Filter out this machine's own advertisement.
-            if let IpAddr::V4(v4) = ip {
-                if own_ips.contains(v4) {
-                    continue;
+        if let Some(info) = super::client::fetch_info(d.ip, super::server::HTTP_PORT) {
+            d.kind = info.kind;
+            if let Ok(mut guard) = peers().lock() {
+                if let Some(e) = guard.iter_mut().find(|e| e.0.ip == d.ip) {
+                    e.0.kind = d.kind.clone();
                 }
             }
-            if devices.iter().any(|d| d.ip == *ip) {
-                continue;
-            }
-            let name = instances
-                .get(i)
-                .or_else(|| instances.first())
-                .cloned()
-                .unwrap_or_else(|| "tumbleweed".to_string());
-            devices.push(DiscoveredDevice {
-                name: display_name(&name),
-                ip: *ip,
-            });
         }
     }
+    log_snapshot_change(&snapshot);
+    Ok(snapshot)
+}
 
-    Ok(devices)
+/// Log `[mdns] devices: ...` only when the discovered set changes, so the log
+/// file shows peers appearing/leaving without a line every poll.
+fn log_snapshot_change(snapshot: &[DiscoveredDevice]) {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Vec<DiscoveredDevice>>>> =
+        std::sync::OnceLock::new();
+    let current = snapshot.to_vec();
+    let mut last = LAST
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap();
+    if last.as_ref() != Some(&current) {
+        log_msg(&format!("[mdns] devices: {snapshot:?}"));
+        *last = Some(current);
+    }
 }
 
 /// Parse a discovery response, collecting PTR instance names and A-record IPs.

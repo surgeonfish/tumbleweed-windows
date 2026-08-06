@@ -8,11 +8,12 @@
 //! - `HEAD /path`  → headers only
 //! - `PUT  /path`  → write an uploaded file (creates parent folders)
 
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::upload_gate;
@@ -53,6 +54,18 @@ pub(crate) fn set_list_directories(enabled: bool) {
 
 fn list_directories_enabled() -> bool {
     LIST_DIRECTORIES.load(Ordering::Relaxed)
+}
+
+/// JSON body for the `GET /info` endpoint: this device's advertised name,
+/// type ("pc"), HTTP server port and app version, so peers can tell what we
+/// are over HTTP.
+fn device_info_json() -> String {
+    format!(
+        "{{\"name\":\"{}\",\"type\":\"pc\",\"port\":{},\"version\":\"{}\"}}",
+        super::mdns::device_hostname(),
+        HTTP_PORT,
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Run the HTTP server forever on `port`. Blocking — spawn it on a thread.
@@ -113,6 +126,18 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
 
     let root = current_root();
     match method.as_str() {
+        // Device-info handshake: peers fetch this to learn our type ("pc")
+        // and server port over HTTP, instead of guessing via a TCP probe.
+        "GET" | "HEAD" if target.split('?').next() == Some("/info") => {
+            let head_only = method == "HEAD";
+            send_bytes(
+                &mut stream,
+                200,
+                "application/json",
+                device_info_json().as_bytes(),
+                head_only,
+            )?
+        }
         "GET" => handle_get(&mut stream, &root, target, false)?,
         "HEAD" => handle_get(&mut stream, &root, target, true)?,
         "PUT" => handle_put(&mut stream, target, &mut reader, content_length)?,
@@ -133,9 +158,8 @@ fn handle_get(stream: &mut TcpStream, root: &Path, target: &str, head_only: bool
             send_error(stream, 403, "Forbidden")
         }
     } else if fs_path.is_file() {
-        let data = std::fs::read(&fs_path)?;
         let ctype = content_type(&fs_path);
-        send_bytes(stream, 200, ctype, &data, head_only)
+        send_file(stream, 200, ctype, &fs_path, head_only)
     } else {
         send_error(stream, 404, "Not Found")
     }
@@ -147,37 +171,43 @@ fn handle_put(
     reader: &mut BufReader<TcpStream>,
     content_length: usize,
 ) -> io::Result<()> {
-    // Read the whole body into memory first.
-    let mut bytes = Vec::with_capacity(content_length);
-    let mut remaining = content_length;
-    let mut buf = [0u8; 8192];
-    while remaining > 0 {
-        let to_read = remaining.min(buf.len());
-        let n = reader.read(&mut buf[..to_read])?;
-        if n == 0 {
-            break;
+    // Stream the body into a temp file instead of buffering the whole thing in
+    // memory, so huge files use constant memory. Moved to the destination once
+    // the user confirms.
+    let tmp = unique_temp_path();
+    {
+        let mut tmp_file = File::create(&tmp)?;
+        let mut remaining = content_length as u64;
+        let mut buf = [0u8; 64 * 1024];
+        while remaining > 0 {
+            let to_read = remaining.min(buf.len() as u64) as usize;
+            let n = reader.read(&mut buf[..to_read])?;
+            if n == 0 {
+                break;
+            }
+            tmp_file.write_all(&buf[..n])?;
+            remaining -= n as u64;
         }
-        bytes.extend_from_slice(&buf[..n]);
-        remaining -= n;
-    }
+    } // tmp_file closed before rename
 
     // The file name is the last URL path segment, percent-decoded.
     let raw_name = target.rsplit('/').next().unwrap_or(target).to_string();
     let Some(name) = url_decode(&raw_name) else {
+        let _ = std::fs::remove_file(&tmp);
         return send_error(stream, 400, "Bad Request");
     };
     if name.is_empty() || name == "." || name == ".." {
+        let _ = std::fs::remove_file(&tmp);
         return send_error(stream, 400, "Bad Request");
     }
 
     // Ask the UI thread to confirm the upload and pick a destination folder.
-    let Some((id, rx)) = upload_gate::submit_upload(name.clone(), bytes.len() as u64) else {
+    let Some((id, rx)) = upload_gate::submit_upload(name.clone(), content_length as u64) else {
+        let _ = std::fs::remove_file(&tmp);
         return send_error(stream, 503, "Not ready");
     };
 
-    let decision = rx
-        .recv_timeout(Duration::from_secs(600))
-        .ok();
+    let decision = rx.recv_timeout(Duration::from_secs(600)).ok();
     upload_gate::remove_upload(id);
 
     match decision {
@@ -186,19 +216,40 @@ fn handle_put(
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match std::fs::write(&dest, &bytes) {
-                Ok(()) => {
-                    println!("[server] saved upload {name} -> {}", dest.display());
-                    send_bytes(stream, 201, "text/plain", b"Saved\n", false)
+            // Move the temp file into place; fall back to copy+delete when the
+            // temp dir and destination are on different volumes.
+            let moved = match std::fs::rename(&tmp, &dest) {
+                Ok(()) => true,
+                Err(_) => {
+                    let copied = std::fs::copy(&tmp, &dest).is_ok();
+                    let _ = std::fs::remove_file(&tmp);
+                    copied
                 }
-                Err(e) => {
-                    println!("[server] save error: {e}");
-                    send_error(stream, 500, "Save failed")
-                }
+            };
+            if moved {
+                println!("[server] saved upload {name} -> {}", dest.display());
+                send_bytes(stream, 201, "text/plain", b"Saved\n", false)
+            } else {
+                println!("[server] save error for {name}");
+                send_error(stream, 500, "Save failed")
             }
         }
-        _ => send_error(stream, 403, "Rejected"),
+        _ => {
+            let _ = std::fs::remove_file(&tmp);
+            send_error(stream, 403, "Rejected")
+        }
     }
+}
+
+/// A per-request unique temp path (concurrent PUTs must not collide).
+fn unique_temp_path() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "tumbleweed-upload-{}-{}.tmp",
+        std::process::id(),
+        n
+    ))
 }
 
 /// Map a URL path to a filesystem path under `root`, rejecting traversal.
@@ -359,6 +410,27 @@ fn send_bytes(
     stream.write_all(head.as_bytes())?;
     if !head_only {
         stream.write_all(body)?;
+    }
+    stream.flush()
+}
+
+/// Streams a file to the client (constant memory even for huge files).
+fn send_file(
+    stream: &mut TcpStream,
+    status: u16,
+    ctype: &str,
+    path: &Path,
+    head_only: bool,
+) -> io::Result<()> {
+    let len = std::fs::metadata(path)?.len();
+    let head = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {ctype}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+        reason(status)
+    );
+    stream.write_all(head.as_bytes())?;
+    if !head_only {
+        let mut file = File::open(path)?;
+        io::copy(&mut file, stream)?;
     }
     stream.flush()
 }
