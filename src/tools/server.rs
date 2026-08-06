@@ -192,10 +192,13 @@ fn handle_put(
     // memory, so huge files use constant memory. Moved to the destination once
     // the user confirms.
     let tmp = unique_temp_path();
+    super::transfer_progress::start(&name, false, content_length as u64);
     let stream_result = (|| -> io::Result<()> {
         let mut tmp_file = File::create(&tmp)?;
         let mut remaining = content_length as u64;
         let mut buf = [0u8; 64 * 1024];
+        let total = content_length as f32;
+        let mut last = 0.0f32;
         while remaining > 0 {
             let to_read = remaining.min(buf.len() as u64) as usize;
             let n = reader.read(&mut buf[..to_read])?;
@@ -204,6 +207,17 @@ fn handle_put(
             }
             tmp_file.write_all(&buf[..n])?;
             remaining -= n as u64;
+            if total > 0.0 {
+                let frac = 1.0 - (remaining as f32) / total;
+                if frac - last >= 0.01 {
+                    super::transfer_progress::update(
+                        &name,
+                        content_length as u64 - remaining,
+                        content_length as u64,
+                    );
+                    last = frac;
+                }
+            }
         }
         Ok(())
     })(); // tmp_file closed here
@@ -212,13 +226,14 @@ fn handle_put(
         // waiting on a dialog for a connection that's already gone.
         upload_gate::fail_upload(id);
         let _ = std::fs::remove_file(&tmp);
+        super::transfer_progress::finish(&name);
         return Err(e);
     }
 
     let decision = rx.recv_timeout(Duration::from_secs(600)).ok();
     upload_gate::remove_upload(id);
 
-    match decision {
+    let outcome = match decision {
         Some(UploadDecision::Save(dir)) => {
             let dest = dir.join(&name);
             if let Some(parent) = dest.parent() {
@@ -246,7 +261,9 @@ fn handle_put(
             let _ = std::fs::remove_file(&tmp);
             send_error(stream, 403, "Rejected")
         }
-    }
+    };
+    super::transfer_progress::finish(&name);
+    outcome
 }
 
 /// A per-request unique temp path (concurrent PUTs must not collide).

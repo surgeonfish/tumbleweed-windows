@@ -35,51 +35,75 @@ pub(crate) fn send_file(ip: IpAddr, port: u16, path: &Path) -> io::Result<()> {
     let len = file.metadata()?.len();
     let target = format!("/{}", url_encode(&name));
 
-    let mut stream = TcpStream::connect((ip, port))?;
-    stream.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    super::transfer_progress::start(&name, true, len);
+    let result = (|| -> io::Result<()> {
+        let mut stream = TcpStream::connect((ip, port))?;
+        stream.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+        stream.set_write_timeout(Some(Duration::from_secs(30)))?;
 
-    let head = format!(
-        "PUT {target} HTTP/1.1\r\nHost: {ip}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(head.as_bytes())?;
-    io::copy(&mut file, &mut stream)?;
-    stream.flush()?;
+        let head = format!(
+            "PUT {target} HTTP/1.1\r\nHost: {ip}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes())?;
 
-    // Read the status line, then drain the header block so the socket settles.
-    let mut reader = io::BufReader::new(&mut stream);
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line)?;
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    let mut consumed = status_line.len();
-    loop {
-        if consumed > MAX_RESPONSE_HEAD {
-            break;
+        // Stream the body, reporting byte counts every ~1%.
+        let mut done = 0u64;
+        let mut last = 0.0f32;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            stream.write_all(&buf[..n])?;
+            done += n as u64;
+            if len > 0 {
+                let frac = (done as f32) / (len as f32);
+                if frac - last >= 0.01 {
+                    super::transfer_progress::update(&name, done, len);
+                    last = frac;
+                }
+            }
         }
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-        consumed += line.len();
-        if line.trim().is_empty() {
-            break;
-        }
-    }
+        stream.flush()?;
 
-    if (200..300).contains(&status) {
-        println!("[client] uploaded {name} -> {ip}:{port}");
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("server responded {status}"),
-        ))
-    }
+        // Read the status line, then drain the header block so the socket settles.
+        let mut reader = io::BufReader::new(&mut stream);
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line)?;
+        let status = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        let mut consumed = status_line.len();
+        loop {
+            if consumed > MAX_RESPONSE_HEAD {
+                break;
+            }
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            consumed += line.len();
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+
+        if (200..300).contains(&status) {
+            println!("[client] uploaded {name} -> {ip}:{port}");
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("server responded {status}"),
+            ))
+        }
+    })();
+    super::transfer_progress::finish(&name);
+    result
 }
 
 /// Device metadata returned by a peer's `GET /info` endpoint.

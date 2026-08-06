@@ -12,6 +12,7 @@ use pages::explorer::{default_folder, explorer_page, save_last_folder, view_data
 use pages::settings::settings_page;
 use pages::transfer::{transfer_page, TransferAction, TransferDirection, TransferRecord};
 use tools::mdns::DiscoveredDevice;
+use tools::transfer_progress::TransferProgress;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
 
 /// One line for a discovered device in the footer dropdown: just its display
@@ -95,6 +96,14 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
+    // In-progress transfers (uploads/downloads), shown as progress bars on the
+    // Transfer page rows. Populated by the client/server background threads.
+    let (transfers, set_transfers) = cx.use_async_state(Vec::<TransferProgress>::new());
+    cx.use_effect((), {
+        let set_transfers = set_transfers.clone();
+        move || tools::transfer_progress::install_progress_setter(set_transfers)
+    });
+
     // Discovered LAN devices, refreshed every 3 seconds in the background.
     let (devices, set_devices) = cx.use_async_state(Vec::<DiscoveredDevice>::new());
     cx.use_effect((), {
@@ -155,6 +164,9 @@ fn app(cx: &mut RenderCx) -> Element {
     let (theme, set_theme) = cx.use_state(RequestedTheme::Default);
     cx.use_effect((theme,), move || set_requested_theme(theme));
 
+    // Selected sub-tab on the Transfer page (All / Downloads / Uploads).
+    let (transfer_tab, set_transfer_tab) = cx.use_state("all".to_string());
+
     // Fuzzy-search the current Explorer folder's entries for suggestions.
     let suggestions: Vec<String> = pages::explorer::search_suggestions(&data, &search_text);
 
@@ -203,7 +215,13 @@ fn app(cx: &mut RenderCx) -> Element {
             &upload_result,
             search_target,
         ),
-        "transfer" => transfer_page(cx, &transfer_history),
+        "transfer" => transfer_page(
+            cx,
+            &transfer_history,
+            transfer_tab,
+            set_transfer_tab.clone(),
+            &transfers,
+        ),
         "devices" => devices_page(
             cx,
             &devices,
