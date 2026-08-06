@@ -552,7 +552,15 @@ fn record_peer_packet(pkt: &[u8]) {
                     e.0.name = name;
                     e.1 = now;
                 }
-                None => guard.push((DiscoveredDevice { name, ip: *ip, kind: String::new() }, now)),
+                None => guard.push((
+                    DiscoveredDevice {
+                        name,
+                        ip: *ip,
+                        kind: String::new(),
+                        version: String::new(),
+                    },
+                    now,
+                )),
             }
         }
         guard.retain(|e| e.1.elapsed() < PEER_TTL);
@@ -651,6 +659,8 @@ pub struct DiscoveredDevice {
     /// Device type reported over HTTP (`/info`): "pc", "phone" or "" while
     /// unknown/pending.
     pub kind: String,
+    /// App version reported over HTTP (`/info`), "" while unknown/pending.
+    pub version: String,
 }
 
 /// A unique, per-machine `.local` hostname, e.g. `tumbleweed-desktop-abc123.local`.
@@ -661,6 +671,12 @@ pub fn device_hostname() -> String {
     let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
     let label = sanitize_label(&raw).unwrap_or_else(|| "host".to_string());
     format!("tumbleweed-{label}.local")
+}
+
+/// This machine's non-loopback IPv4 addresses as display strings, for the
+/// "This device" entry in the Devices page.
+pub fn local_ip_addrs() -> Vec<String> {
+    local_ipv4_addrs().iter().map(|a| a.to_string()).collect()
 }
 
 /// Sanitize a hostname-ish string into a valid single DNS label.
@@ -728,9 +744,11 @@ pub fn discover_devices(timeout: Duration) -> io::Result<Vec<DiscoveredDevice>> 
         }
         if let Some(info) = super::client::fetch_info(d.ip, super::server::HTTP_PORT) {
             d.kind = info.kind;
+            d.version = info.version;
             if let Ok(mut guard) = peers().lock() {
                 if let Some(e) = guard.iter_mut().find(|e| e.0.ip == d.ip) {
                     e.0.kind = d.kind.clone();
+                    e.0.version = d.version.clone();
                 }
             }
         }

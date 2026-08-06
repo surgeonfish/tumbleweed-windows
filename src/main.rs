@@ -7,6 +7,7 @@ use windows_reactor::*;
 
 mod pages;
 mod tools;
+use pages::devices::devices_page;
 use pages::explore::{default_folder, explore_page, save_last_folder, view_data, UploadOutcome};
 use pages::settings::settings_page;
 use pages::transfer::{transfer_page, TransferAction, TransferDirection, TransferRecord};
@@ -185,6 +186,7 @@ fn app(cx: &mut RenderCx) -> Element {
     let menu_items = [
         NavViewItem::new("Explore").tag("explore").icon(Symbol::Folder),
         NavViewItem::new("Transfer").tag("transfer").icon(Symbol::Send),
+        NavViewItem::new("Devices").tag("devices").icon(Symbol::World),
     ];
 
     let body: Element = match page.as_str() {
@@ -200,6 +202,13 @@ fn app(cx: &mut RenderCx) -> Element {
             search_target,
         ),
         "transfer" => transfer_page(cx, &transfer_history),
+        "devices" => devices_page(
+            cx,
+            &devices,
+            &tools::mdns::device_hostname(),
+            &tools::mdns::local_ip_addrs(),
+            env!("CARGO_PKG_VERSION"),
+        ),
         _ => settings_page(cx, theme, set_theme.clone()),
     };
 

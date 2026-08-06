@@ -88,6 +88,7 @@ pub struct PeerInfo {
     pub name: String,
     pub kind: String,
     pub port: u16,
+    pub version: String,
 }
 
 /// Query a peer's `GET /info` endpoint to learn its name, type and port.
@@ -173,5 +174,6 @@ fn parse_info(body: &str) -> Option<PeerInfo> {
         name: json_str_field(body, "name")?,
         kind: json_str_field(body, "type")?,
         port: json_num_field(body, "port").unwrap_or(0),
+        version: json_str_field(body, "version").unwrap_or_else(|| "unknown".to_string()),
     })
 }
