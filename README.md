@@ -14,26 +14,27 @@ files to one another — no cloud, no accounts, no configuration.
 - **File explorer** — browse folders with a breadcrumb bar and a list view.
   Remembers the last folder you opened (defaults to your Downloads folder on
   first launch).
-- **mDNS advertising** — advertises this machine as
-  `tumbleweed-<hostname>.local` with the service type `_tumbleweed._tcp.local`,
-  so other Tumbleweed instances (and clients) can find it by name.
-- **HTTP file server** — serves the currently-explored folder over HTTP
-  (`GET` / `HEAD`), and accepts incoming files via `PUT`.
-- **Incoming upload confirmation** — before a received file is written, a
-  dialog asks you to confirm and pick the destination folder.
-- **Device discovery** — finds other Tumbleweed devices on the LAN every 3
-  seconds; the title-bar footer shows them in a dropdown with a live count
-  badge (an indeterminate ring while it is still searching). Your own
-  advertisement is filtered out.
-- **Send to device** — pick a device in the footer, then click the upload
-  button on any file in the explorer to push it over the LAN. Success/failure
-  is reported with a transient InfoBar.
-- **Transfer history** — a Transfer page with **All / Downloads / Uploads**
-  tabs tracking everything you send and receive.
-- **Appearance settings** — switch the app theme (follow system / light /
-  dark) from the Settings page.
 - **Fuzzy search** — type in the title-bar search box to fuzzy-match files in
   the current folder; choosing a result selects it in the explorer list.
+- **mDNS advertising & discovery** — advertises this machine as
+  `tumbleweed-<hostname>.local` with the service type `_tumbleweed._tcp.local`,
+  and discovers other Tumbleweed devices on the LAN every few seconds. Your
+  own advertisement is filtered out.
+- **Devices tab** — shows this device (host name, IPs, version) and every
+  discovered device (name, IP, type, version) in two sections.
+- **Send to device** — pick a device in the title-bar footer, then click the
+  upload button on any file in the explorer to push it over the LAN.
+  Success/failure is reported with a transient InfoBar.
+- **HTTP file server** — serves the currently-explored folder over HTTP
+  (`GET` / `HEAD`) and accepts incoming files via `PUT`.
+- **Incoming upload confirmation** — the moment a transfer starts you're
+  asked to confirm and pick the destination folder (queued if several arrive
+  at once). If the app is in the background, the taskbar button flashes.
+- **Transfer history** — a Transfer page with **All / Downloads / Uploads**
+  sections. Active transfers show a live progress bar with transferred/total
+  byte counts; the history persists across app restarts.
+- **Appearance settings** — switch the app theme (follow system / light /
+  dark) from the Settings page; the choice is remembered on restart.
 
 ## How it works
 
@@ -59,14 +60,18 @@ files to one another — no cloud, no accounts, no configuration.
 src/
 ├── main.rs              # App entry: shared state, title bar, navigation
 ├── pages/
+│   ├── devices.rs       # Devices tab (this device + discovered peers)
 │   ├── explorer.rs      # File explorer + fuzzy search + upload button
 │   ├── settings.rs      # Settings page (theme) with reusable simple_card
-│   └── transfer.rs      # Transfer history (All / Downloads / Uploads)
+│   └── transfer.rs      # Transfer history + live progress
 └── tools/
+    ├── attention.rs     # Taskbar flashing for background alerts
     ├── client.rs        # HTTP client used to push files to peers
     ├── mdns.rs          # mDNS advertiser + device discovery
     ├── picker.rs        # WinUI folder picker (incoming uploads)
     ├── server.rs        # HTTP file server (GET / HEAD / PUT)
+    ├── settings_store.rs# INI-style settings persistence
+    ├── transfer_progress.rs # In-progress transfer tracking
     └── upload_gate.rs   # Bridges upload confirmations to the UI thread
 ```
 
@@ -101,8 +106,9 @@ to be installed (handled by the `windows-reactor-setup` build dependency).
 - **HTTP port:** `tools::server::HTTP_PORT` (default `8000`).
 - **Directory listing:** opt-in. It is disabled by default; enable it later by
   wiring `tools::server::set_list_directories(true)` into the UI.
-- **Settings persistence:** the last-opened folder is stored in
-  `%LOCALAPPDATA%\tumbleweed\settings.ini`.
+- **Persistence:** settings (last-opened folder, theme) are stored in
+  `%LOCALAPPDATA%\tumbleweed\settings.ini`; transfer history is stored in
+  `%LOCALAPPDATA%\tumbleweed\history.txt`.
 
 ## Security notes
 
