@@ -93,6 +93,17 @@ fn app(cx: &mut RenderCx) -> Element {
         move || tools::upload_gate::install_upload_setter(set_incoming)
     });
 
+    // When an incoming upload arrives, flash the taskbar if we're in the
+    // background so the confirmation dialog gets noticed.
+    cx.use_effect((incoming.clone(),), {
+        let incoming = incoming.clone();
+        move || {
+            if !incoming.is_empty() {
+                tools::attention::flash_if_background();
+            }
+        }
+    });
+
     // Discovered LAN devices, refreshed every 3 seconds in the background.
     let (devices, set_devices) = cx.use_async_state(Vec::<DiscoveredDevice>::new());
     cx.use_effect((), {
