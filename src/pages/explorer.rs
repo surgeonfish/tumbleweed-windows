@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 use windows_reactor::*;
 use crate::tools::mdns::DiscoveredDevice;
 
-// ---------- Filesystem helpers for the Explore page ----------
+// ---------- Filesystem helpers for the Explorer page ----------
 
 #[derive(Clone)]
 pub(crate) struct FsEntry {
@@ -95,14 +95,14 @@ fn path_from_crumbs(crumbs: &[String], upto: usize) -> PathBuf {
 
 /// Folder-derived data shared with the app's single render context.
 #[derive(Clone)]
-pub(crate) struct ExploreData {
+pub(crate) struct ExplorerData {
     pub(crate) entries: Vec<FsEntry>,
     pub(crate) crumbs: Vec<String>,
 }
 
 /// Compute the listing + breadcrumb items for `path`.
-pub(crate) fn view_data(path: &Path) -> ExploreData {
-    ExploreData {
+pub(crate) fn view_data(path: &Path) -> ExplorerData {
+    ExplorerData {
         entries: list_entries(path),
         crumbs: path_to_crumbs(path),
     }
@@ -128,7 +128,7 @@ pub(crate) fn fuzzy_match(query: &str, name: &str) -> bool {
 }
 
 /// Names of entries in `data` that fuzzy-match `query` (for suggestions).
-pub(crate) fn search_suggestions(data: &ExploreData, query: &str) -> Vec<String> {
+pub(crate) fn search_suggestions(data: &ExplorerData, query: &str) -> Vec<String> {
     let q = query.trim();
     if q.is_empty() {
         return Vec::new();
@@ -144,7 +144,7 @@ pub(crate) fn search_suggestions(data: &ExploreData, query: &str) -> Vec<String>
 /// Index (into `data.entries`) of the best fuzzy match for `query`: prefers an
 /// entry whose name starts with the query, otherwise the first fuzzy match.
 /// Returns `None` when nothing matches.
-pub(crate) fn search_best_index(data: &ExploreData, query: &str) -> Option<usize> {
+pub(crate) fn search_best_index(data: &ExplorerData, query: &str) -> Option<usize> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return None;
@@ -169,7 +169,7 @@ pub(crate) fn search_best_index(data: &ExploreData, query: &str) -> Option<usize
 }
 
 /// Result of a file-send attempt, surfaced as a transient InfoBar in the
-/// Explore page (auto-dismissed after a few seconds).
+/// Explorer page (auto-dismissed after a few seconds).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UploadOutcome {
     /// The file `name` was delivered to the picked device.
@@ -178,13 +178,13 @@ pub(crate) enum UploadOutcome {
     Error(String),
 }
 
-/// The Explore page. It renders inside the app's shared [`RenderCx`] (the same
+/// The Explorer page. It renders inside the app's shared [`RenderCx`] (the same
 /// one every page uses); the folder state — which defaults to the user's
 /// Downloads folder on first launch — is owned by `app` and passed in here.
-pub(crate) fn explore_page(
+pub(crate) fn explorer_page(
     _cx: &mut RenderCx,
     set_current_path: SetState<PathBuf>,
-    data: &ExploreData,
+    data: &ExplorerData,
     hovered_index: Option<usize>,
     set_hovered_index: SetState<Option<usize>>,
     selected_device: Option<DiscoveredDevice>,
@@ -226,7 +226,7 @@ pub(crate) fn explore_page(
                 move || {
                     // Only send when a device is picked in the footer dropdown.
                     let Some(device) = device.as_ref() else {
-                        println!("[explore] no device selected; upload skipped");
+                        println!("[explorer] no device selected; upload skipped");
                         set_upload_result.call(Some(UploadOutcome::Error(format!(
                             "No device selected; could not send"
                             ))));

@@ -34,7 +34,7 @@ pub(crate) struct TransferRecord {
 /// Actions that mutate the transfer history (shared state in `app`).
 #[derive(Clone)]
 pub(crate) enum TransferAction {
-    /// Mark `name` as uploaded — fired by the Explore page's upload button.
+    /// Mark `name` as uploaded — fired by the Explorer page's upload button.
     MarkUploaded(String),
     /// Mark `name` as downloaded — fired when an incoming upload is accepted.
     MarkDownloaded(String),

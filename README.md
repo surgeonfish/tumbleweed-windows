@@ -59,7 +59,7 @@ files to one another — no cloud, no accounts, no configuration.
 src/
 ├── main.rs              # App entry: shared state, title bar, navigation
 ├── pages/
-│   ├── explore.rs       # File explorer + fuzzy search + upload button
+│   ├── explorer.rs      # File explorer + fuzzy search + upload button
 │   ├── settings.rs      # Settings page (theme) with reusable simple_card
 │   └── transfer.rs      # Transfer history (All / Downloads / Uploads)
 └── tools/

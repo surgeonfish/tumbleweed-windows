@@ -1,6 +1,6 @@
 //! Minimal HTTP file server (std only).
 //!
-//! Serves the folder currently shown in the Explore page over HTTP and accepts
+//! Serves the folder currently shown in the Explorer page over HTTP and accepts
 //! file uploads via `PUT`. Run [`serve`] on its own background thread.
 //!
 //! Endpoints:
@@ -23,10 +23,10 @@ use super::upload_gate::UploadDecision;
 /// same port, so a client can reach a discovered device at `<ip>:HTTP_PORT`.
 pub const HTTP_PORT: u16 = 8000;
 
-/// The folder the server exposes, updated as the user browses in Explore.
+/// The folder the server exposes, updated as the user browses in Explorer.
 static SERVER_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Update the served folder (called when the Explore folder changes).
+/// Update the served folder (called when the Explorer folder changes).
 pub(crate) fn set_root(path: PathBuf) {
     if let Ok(mut root) = SERVER_ROOT.lock() {
         *root = Some(path);

@@ -1,4 +1,4 @@
 pub mod devices;
-pub mod explore;
+pub mod explorer;
 pub mod settings;
 pub mod transfer;

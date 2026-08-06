@@ -8,7 +8,7 @@ use windows_reactor::*;
 mod pages;
 mod tools;
 use pages::devices::devices_page;
-use pages::explore::{default_folder, explore_page, save_last_folder, view_data, UploadOutcome};
+use pages::explorer::{default_folder, explorer_page, save_last_folder, view_data, UploadOutcome};
 use pages::settings::settings_page;
 use pages::transfer::{transfer_page, TransferAction, TransferDirection, TransferRecord};
 use tools::mdns::DiscoveredDevice;
@@ -30,13 +30,13 @@ fn device_text(d: &DiscoveredDevice) -> String {
 }
 
 fn app(cx: &mut RenderCx) -> Element {
-    let (page, set_page) = cx.use_state("explore".to_string());
+    let (page, set_page) = cx.use_state("explorer".to_string());
     let (search_text, set_search_text) = cx.use_state(String::new());
-    // Index (into the current Explore listing) of the fuzzy-searched entry to
+    // Index (into the current Explorer listing) of the fuzzy-searched entry to
     // select in the list; `None` leaves the selection untouched.
     let (search_target, set_search_target) = cx.use_state(None::<usize>);
 
-    // Explore page state lives here, in the app's single render context, so
+    // Explorer page state lives here, in the app's single render context, so
     // every page shares the same `cx`. Defaults to the Downloads folder.
     let default = cx.use_memo((), || default_folder());
     let (current_path, set_current_path) = cx.use_state(default.clone());
@@ -57,10 +57,10 @@ fn app(cx: &mut RenderCx) -> Element {
     // Listing + breadcrumbs recompute only when the folder changes.
     let data = cx.use_memo((current_path.clone(),), || view_data(&current_path));
 
-    // Hovered row in the explore list — reveals the per-row upload button.
+    // Hovered row in the explorer list — reveals the per-row upload button.
     let (hovered_index, set_hovered_index) = cx.use_state(None::<usize>);
 
-    // Transfer history, shared across pages. The Explore upload button appends
+    // Transfer history, shared across pages. The Explorer upload button appends
     // uploads; downloads will be recorded once a download action exists.
     let (transfer_history, dispatch_transfer) = cx.use_reducer_fn(
         |history: Vec<TransferRecord>, action: TransferAction| match action {
@@ -107,7 +107,7 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
-    // Device picked in the footer dropdown; Explore uploads target this device.
+    // Device picked in the footer dropdown; Explorer uploads target this device.
     let (selected_device, set_selected_device) = cx.use_state(None::<DiscoveredDevice>);
 
     // If the picked device drops off the discovery list (went offline), forget
@@ -128,7 +128,7 @@ fn app(cx: &mut RenderCx) -> Element {
 
     // "File sent to the picked device" result, marshalled from the worker thread
     // back to the UI thread. Success is recorded in Transfer history; both
-    // outcomes show an InfoBar in Explore that auto-dismisses after 5 seconds.
+    // outcomes show an InfoBar in Explorer that auto-dismisses after 5 seconds.
     let (upload_result, set_upload_result) = cx.use_async_state(None::<UploadOutcome>);
     cx.use_effect((upload_result.clone(),), {
         let dispatch_transfer = dispatch_transfer.clone();
@@ -153,8 +153,8 @@ fn app(cx: &mut RenderCx) -> Element {
     let (theme, set_theme) = cx.use_state(RequestedTheme::Default);
     cx.use_effect((theme,), move || set_requested_theme(theme));
 
-    // Fuzzy-search the current Explore folder's entries for suggestions.
-    let suggestions: Vec<String> = pages::explore::search_suggestions(&data, &search_text);
+    // Fuzzy-search the current Explorer folder's entries for suggestions.
+    let suggestions: Vec<String> = pages::explorer::search_suggestions(&data, &search_text);
 
     let search_box: Element = auto_suggest_box(&*search_text)
         .placeholder_text("Search files...")
@@ -164,8 +164,8 @@ fn app(cx: &mut RenderCx) -> Element {
             let data = data.clone();
             let set_search_target = set_search_target.clone();
             move |query: String| {
-                // Submit selects the best fuzzy match in the Explore list.
-                if let Some(i) = pages::explore::search_best_index(&data, &query) {
+                // Submit selects the best fuzzy match in the Explorer list.
+                if let Some(i) = pages::explorer::search_best_index(&data, &query) {
                     set_search_target.call(Some(i));
                 }
             }
@@ -174,8 +174,8 @@ fn app(cx: &mut RenderCx) -> Element {
             let data = data.clone();
             let set_search_target = set_search_target.clone();
             move |chosen: String| {
-                // Choosing a suggestion selects that entry in the Explore list.
-                if let Some(i) = pages::explore::search_best_index(&data, &chosen) {
+                // Choosing a suggestion selects that entry in the Explorer list.
+                if let Some(i) = pages::explorer::search_best_index(&data, &chosen) {
                     set_search_target.call(Some(i));
                 }
             }
@@ -184,13 +184,13 @@ fn app(cx: &mut RenderCx) -> Element {
     let search_box = search_box.width(652.0);
 
     let menu_items = [
-        NavViewItem::new("Explore").tag("explore").icon(Symbol::Folder),
+        NavViewItem::new("Explorer").tag("explorer").icon(Symbol::Folder),
         NavViewItem::new("Transfer").tag("transfer").icon(Symbol::Send),
         NavViewItem::new("Devices").tag("devices").icon(Symbol::World),
     ];
 
     let body: Element = match page.as_str() {
-        "explore" => explore_page(
+        "explorer" => explorer_page(
             cx,
             set_current_path.clone(),
             &data,
@@ -247,7 +247,7 @@ fn app(cx: &mut RenderCx) -> Element {
     };
 
     // Title-bar footer: dropdown listing discovered devices + count badge.
-    // Picking a device records it so Explore uploads target that device.
+    // Picking a device records it so Explorer uploads target that device.
     // While no devices are found, show an indeterminate ring (searching);
     // once one or more are discovered, show the numeric InfoBadge instead.
     let device_label = selected_device
@@ -310,7 +310,7 @@ fn main() -> Result<()> {
     bootstrap()?;
 
     // The app is the server: advertise "tumbleweed.local" over mDNS and serve
-    // the Explore folder over HTTP, both on background threads.
+    // the Explorer folder over HTTP, both on background threads.
     std::thread::spawn(|| {
         let host = tools::mdns::device_hostname();
         if let Err(e) = tools::mdns::advertise(&host, tools::server::HTTP_PORT) {
