@@ -241,7 +241,7 @@ fn app(cx: &mut RenderCx) -> Element {
         "devices" => devices_page(
             cx,
             &devices,
-            &tools::mdns::device_hostname(),
+            &tools::mdns::device_host_name(),
             &tools::mdns::local_ip_addrs(),
             env!("CARGO_PKG_VERSION"),
         ),

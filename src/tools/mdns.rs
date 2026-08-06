@@ -673,6 +673,12 @@ pub fn device_hostname() -> String {
     format!("tumbleweed-{label}.local")
 }
 
+/// This machine's plain host name (from `COMPUTERNAME`), e.g. `desktop-abc123`.
+pub fn device_host_name() -> String {
+    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
+    sanitize_label(&raw).unwrap_or_else(|| "host".to_string())
+}
+
 /// This machine's non-loopback IPv4 addresses as display strings, for the
 /// "This device" entry in the Devices page.
 pub fn local_ip_addrs() -> Vec<String> {
