@@ -14,19 +14,10 @@ use pages::transfer::{transfer_page, TransferAction, TransferDirection, Transfer
 use tools::mdns::DiscoveredDevice;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
 
-/// One line for a discovered device in the footer dropdown: name, a type
-/// label when known (from the peer's HTTP `/info`), then its IP.
+/// One line for a discovered device in the footer dropdown: just its display
+/// name.
 fn device_text(d: &DiscoveredDevice) -> String {
-    let kind = match d.kind.as_str() {
-        "pc" => "PC",
-        "phone" => "Phone",
-        _ => "",
-    };
-    if kind.is_empty() {
-        format!("{}  ·  {}", d.name, d.ip)
-    } else {
-        format!("{}  ·  {}  ·  {}", d.name, kind, d.ip)
-    }
+    d.name.clone()
 }
 
 fn app(cx: &mut RenderCx) -> Element {
