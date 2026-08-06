@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use windows_reactor::*;
 
 use crate::tools::transfer_progress::TransferProgress;
@@ -40,6 +41,51 @@ pub(crate) enum TransferAction {
     MarkUploaded(String),
     /// Mark `name` as downloaded — fired when an incoming upload is accepted.
     MarkDownloaded(String),
+}
+
+/// Path to the transfer history file (`%LOCALAPPDATA%\tumbleweed\history.txt`).
+fn history_file() -> PathBuf {
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
+    Path::new(&base).join("tumbleweed").join("history.txt")
+}
+
+/// Persist the transfer history (one `<name>\t<up|down>` line per record), so
+/// it survives app restarts.
+pub(crate) fn save_history(history: &[TransferRecord]) {
+    let file = history_file();
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut text = String::new();
+    for r in history {
+        let tag = match r.direction {
+            TransferDirection::Uploaded => "up",
+            TransferDirection::Downloaded => "down",
+        };
+        text.push_str(&format!("{}\t{}\n", r.name, tag));
+    }
+    let _ = std::fs::write(&file, text);
+}
+
+/// Load the transfer history saved by a previous launch.
+pub(crate) fn load_history() -> Vec<TransferRecord> {
+    let Ok(text) = std::fs::read_to_string(history_file()) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let (name, tag) = line.split_once('\t')?;
+            let direction = match tag {
+                "up" => TransferDirection::Uploaded,
+                "down" => TransferDirection::Downloaded,
+                _ => return None,
+            };
+            Some(TransferRecord {
+                name: name.to_string(),
+                direction,
+            })
+        })
+        .collect()
 }
 
 /// A row shown in a transfer list: a completed record or an in-progress

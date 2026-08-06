@@ -10,7 +10,9 @@ mod tools;
 use pages::devices::devices_page;
 use pages::explorer::{default_folder, explorer_page, save_last_folder, view_data, UploadOutcome};
 use pages::settings::settings_page;
-use pages::transfer::{transfer_page, TransferAction, TransferDirection, TransferRecord};
+use pages::transfer::{
+    load_history, save_history, transfer_page, TransferAction, TransferDirection, TransferRecord,
+};
 use tools::mdns::DiscoveredDevice;
 use tools::transfer_progress::TransferProgress;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
@@ -73,8 +75,15 @@ fn app(cx: &mut RenderCx) -> Element {
                 h
             }
         },
-        Vec::new(),
+        // Load the history persisted by a previous launch.
+        load_history(),
     );
+
+    // Persist the transfer history whenever it changes.
+    cx.use_effect((transfer_history.clone(),), {
+        let transfer_history = transfer_history.clone();
+        move || save_history(&transfer_history)
+    });
 
     // Incoming upload confirmation bridge (HTTP server thread -> UI thread).
     // Multiple concurrent transfers are queued; the UI confirms them one at a
