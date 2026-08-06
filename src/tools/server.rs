@@ -171,11 +171,28 @@ fn handle_put(
     reader: &mut BufReader<TcpStream>,
     content_length: usize,
 ) -> io::Result<()> {
+    // The file name is the last URL path segment, percent-decoded. Decode it
+    // up front so the confirmation dialog can show it as soon as the transfer
+    // starts — before the body has finished streaming in.
+    let raw_name = target.rsplit('/').next().unwrap_or(target).to_string();
+    let Some(name) = url_decode(&raw_name) else {
+        return send_error(stream, 400, "Bad Request");
+    };
+    if name.is_empty() || name == "." || name == ".." {
+        return send_error(stream, 400, "Bad Request");
+    }
+
+    // Ask the UI thread to confirm up front: the dialog appears at the start
+    // of the transfer, while the body is still arriving.
+    let Some((id, rx)) = upload_gate::submit_upload(name.clone(), content_length as u64) else {
+        return send_error(stream, 503, "Not ready");
+    };
+
     // Stream the body into a temp file instead of buffering the whole thing in
     // memory, so huge files use constant memory. Moved to the destination once
     // the user confirms.
     let tmp = unique_temp_path();
-    {
+    let stream_result = (|| -> io::Result<()> {
         let mut tmp_file = File::create(&tmp)?;
         let mut remaining = content_length as u64;
         let mut buf = [0u8; 64 * 1024];
@@ -188,24 +205,15 @@ fn handle_put(
             tmp_file.write_all(&buf[..n])?;
             remaining -= n as u64;
         }
-    } // tmp_file closed before rename
-
-    // The file name is the last URL path segment, percent-decoded.
-    let raw_name = target.rsplit('/').next().unwrap_or(target).to_string();
-    let Some(name) = url_decode(&raw_name) else {
+        Ok(())
+    })(); // tmp_file closed here
+    if let Err(e) = stream_result {
+        // The transfer died mid-stream: drop the upload so the UI doesn't keep
+        // waiting on a dialog for a connection that's already gone.
+        upload_gate::fail_upload(id);
         let _ = std::fs::remove_file(&tmp);
-        return send_error(stream, 400, "Bad Request");
-    };
-    if name.is_empty() || name == "." || name == ".." {
-        let _ = std::fs::remove_file(&tmp);
-        return send_error(stream, 400, "Bad Request");
+        return Err(e);
     }
-
-    // Ask the UI thread to confirm the upload and pick a destination folder.
-    let Some((id, rx)) = upload_gate::submit_upload(name.clone(), content_length as u64) else {
-        let _ = std::fs::remove_file(&tmp);
-        return send_error(stream, 503, "Not ready");
-    };
 
     let decision = rx.recv_timeout(Duration::from_secs(600)).ok();
     upload_gate::remove_upload(id);

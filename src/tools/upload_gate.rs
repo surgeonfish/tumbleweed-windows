@@ -81,6 +81,15 @@ pub(crate) fn remove_upload(id: u64) {
     replies().lock().unwrap().remove(&id);
 }
 
+/// The server-side transfer failed before a decision (e.g. the client
+/// disconnected mid-stream): drop the upload so the UI doesn't keep waiting on
+/// a dialog for a connection that's already gone.
+pub(crate) fn fail_upload(id: u64) {
+    replies().lock().unwrap().remove(&id);
+    PENDING.lock().unwrap().retain(|u| u.id != id);
+    push_queue();
+}
+
 /// Push the current pending queue to the UI thread (no-op until the setter is
 /// installed).
 fn push_queue() {
