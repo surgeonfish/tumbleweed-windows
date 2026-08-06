@@ -314,11 +314,29 @@ pub(crate) fn explorer_page(
     };
 
     grid((
-        breadcrumb.grid_row(0),
-        list.grid_row(1),
-        outcome_bar.grid_row(2),
+        title("Explorer")
+            .margin(Thickness {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 12.0,
+            })
+            .grid_row(0),
+        breadcrumb.grid_row(1),
+        list.grid_row(2),
+        outcome_bar.grid_row(3),
     ))
-    .rows([GridLength::Auto, GridLength::STAR, GridLength::Auto])
-    .margin(Thickness::uniform(12.0))
+    .rows([
+        GridLength::Auto,
+        GridLength::Auto,
+        GridLength::STAR,
+        GridLength::Auto,
+    ])
+    .margin(Thickness {
+        left: 36.0,
+        right: 36.0,
+        top: 24.0,
+        bottom: 0.0,
+    })
     .into()
 }

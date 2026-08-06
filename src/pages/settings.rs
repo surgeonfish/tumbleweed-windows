@@ -72,8 +72,25 @@ pub(crate) fn settings_page(
             }),
     );
 
-    let stack: Element = vstack((theme_card,)).spacing(8.0).into();
-    scroll_view(stack)
-        .margin(Thickness::uniform(12.0))
-        .into()
+    // The card lives inside the scroll view; the title sits above it.
+    let card_stack: Element = vstack((theme_card,)).spacing(8.0).into();
+    let scroll: Element = scroll_view(card_stack)
+        .into();
+
+    vstack((
+        title("Settings").margin(Thickness {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 12.0,
+        }),
+        scroll,
+    ))
+    .margin(Thickness {
+        left: 36.0,
+        right: 36.0,
+        top: 24.0,
+        bottom: 0.0,
+    })
+    .into()
 }

@@ -96,7 +96,22 @@ pub(crate) fn devices_page(
     children.extend(other_cards);
 
     let stack: Element = vstack(children).spacing(8.0).into();
-    scroll_view(stack)
-        .margin(Thickness::uniform(12.0))
+    let scroll: Element = scroll_view(stack).into();
+
+    vstack((
+            title("Devices").margin(Thickness {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 12.0,
+            }),
+            scroll
+        ))
+        .margin(Thickness {
+            left: 36.0,
+            right: 36.0,
+            top: 24.0,
+            bottom: 0.0,
+        })
         .into()
 }

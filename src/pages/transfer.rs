@@ -82,13 +82,36 @@ pub(crate) fn transfer_page(_cx: &mut RenderCx, history: &[TransferRecord]) -> E
         .cloned()
         .collect();
 
-    TabView::new([
-        TabItem::new("All", history_list(history.to_vec())),
-        TabItem::new("Downloads", history_list(downloads)),
-        TabItem::new("Uploads", history_list(uploads)),
-    ])
-    .selected_index(0)
-    .is_add_tab_button_visible(false)
-    .margin(Thickness::uniform(12.0))
+    grid((
+        title("Transfer")
+            .margin(Thickness {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 12.0,
+            })
+            .grid_row(0),
+        TabView::new([
+            TabItem::new("All", history_list(history.to_vec())),
+            TabItem::new("Downloads", history_list(downloads)),
+            TabItem::new("Uploads", history_list(uploads)),
+        ])
+        .margin(Thickness {
+            left: -8.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        })
+        .selected_index(0)
+        .is_add_tab_button_visible(false)
+        .grid_row(1),
+    ))
+    .rows([GridLength::Auto, GridLength::STAR])
+    .margin(Thickness {
+        left: 36.0,
+        right: 36.0,
+        top: 24.0,
+        bottom: 0.0,
+    })
     .into()
 }
