@@ -8,11 +8,11 @@ pub(crate) enum TransferDirection {
 }
 
 impl TransferDirection {
-    /// Leading icon shown on the history row.
+    /// Leading glyph (Segoe Fluent Icons) shown on the history row.
     fn icon(&self) -> &'static str {
         match self {
-            Self::Uploaded => "📤",
-            Self::Downloaded => "📥",
+            Self::Uploaded => "\u{E898}",   // Upload
+            Self::Downloaded => "\u{E896}", // Download
         }
     }
     /// Short stable tag used for list keys.
@@ -43,8 +43,26 @@ pub(crate) enum TransferAction {
 /// Build a list view of `records`, each row prefixed with its direction icon.
 fn history_list(records: Vec<TransferRecord>) -> Element {
     list_view(records, |r, _| {
-        TextBlock::new(format!("{}  {}", r.direction.icon(), r.name))
-            .padding(Thickness::uniform(8.0))
+        hstack((
+            TextBlock::new(r.direction.icon())
+                .font_family("Segoe Fluent Icons")
+                .font_size(16.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .padding(Thickness {
+                    left: 8.0,
+                    top: 8.0,
+                    right: 0.0,
+                    bottom: 8.0,
+                }),
+            TextBlock::new(r.name.clone())
+                .vertical_alignment(VerticalAlignment::Center)
+                .padding(Thickness {
+                    left: 4.0,
+                    top: 8.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                }),
+        ))
     })
     .with_key_selector(|r| format!("{}#{}", r.name, r.direction.tag()))
     .into()
