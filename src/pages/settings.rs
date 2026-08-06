@@ -9,36 +9,34 @@ pub(crate) fn simple_card(
     caption: impl Into<String>,
     trailing: impl Into<Element>,
 ) -> Element {
-    grid((
-        TextBlock::new(icon)
-            .font_family("Segoe Fluent Icons")
-            .font_size(26.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(0),
+     border(
         grid((
-            TextBlock::new(title).grid_row(0),
-            TextBlock::new(caption)
-                .font_size(12.0)
-                .foreground(Color { a: 255, r: 130, g: 130, b: 130 })
-                .grid_row(1),
-        ))
-        .rows([GridLength::Auto, GridLength::Auto])
-        .vertical_alignment(VerticalAlignment::Center)
-        .margin(Thickness {
-            left: 12.0,
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-        })
-        .grid_column(1),
-        trailing
-            .into()
+            TextBlock::new(icon)
+                .font_family("Segoe Fluent Icons")
+                .font_size(26.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0),
+            grid((
+                text_block::body(title).grid_row(0),
+                text_block::caption(caption).grid_row(1),
+            ))
+            .rows([GridLength::Auto, GridLength::Auto])
             .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(2),
-    ))
-    .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
-    .padding(Thickness::uniform(16.0))
-    .background(Color { a: 0, r: 0, g: 0, b: 0 })
+            .grid_column(1),
+            trailing
+                .into()
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(2),
+        ))
+        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+        .column_spacing(12.0)
+        .padding(Thickness::uniform(16.0)),
+    )
+    .corner_radius(4.0)
+    // Card fill: ControlFillColorDefaultBrush; stroke: CardStrokeColorDefaultBrush.
+    .background(ThemeRef::ControlFill)
+    .border_brush(ThemeRef::CardStroke)
+    .border_thickness(Thickness::uniform(1.0))
     .into()
 }
 
@@ -74,8 +72,8 @@ pub(crate) fn settings_page(
             }),
     );
 
-    list_view(vec![theme_card], |card, _idx| card.clone())
-        .with_key_selector(|_| "appearance".to_string())
-        .build()
+    let stack: Element = vstack((theme_card,)).spacing(8.0).into();
+    scroll_view(stack)
         .margin(Thickness::uniform(12.0))
+        .into()
 }
