@@ -200,7 +200,7 @@ fn app(cx: &mut RenderCx) -> Element {
     let menu_items = [
         NavViewItem::new("Explorer").tag("explorer").icon(Symbol::Folder),
         NavViewItem::new("Transfer").tag("transfer").icon(Symbol::Send),
-        NavViewItem::new("Devices").tag("devices").icon(Symbol::World),
+        NavViewItem::new("Devices").tag("devices").icon(Symbol::Scan),
     ];
 
     let body: Element = match page.as_str() {
