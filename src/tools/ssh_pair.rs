@@ -4,6 +4,7 @@
 //! the Android app can scan it and pair with this PC.
 
 use std::io;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 
 /// The app's data folder, where the SSH identity is stored.
@@ -38,10 +39,17 @@ fn ssh_keygen_exe() -> Option<PathBuf> {
 }
 
 fn run_ssh_keygen(args: &[&str]) -> io::Result<()> {
-    let status = match ssh_keygen_exe() {
-        Some(exe) => std::process::Command::new(exe).args(args).status()?,
-        None => std::process::Command::new("ssh-keygen").args(args).status()?,
+    let mut cmd = match ssh_keygen_exe() {
+        Some(exe) => std::process::Command::new(exe),
+        None => std::process::Command::new("ssh-keygen"),
     };
+    let status = cmd
+        .args(args)
+        // CREATE_NO_WINDOW: ssh-keygen is a console-subsystem executable; without
+        // this flag a console window flashes up briefly every time the key pair
+        // is generated or regenerated.
+        .creation_flags(0x0800_0000)
+        .status()?;
     if status.success() {
         Ok(())
     } else {
