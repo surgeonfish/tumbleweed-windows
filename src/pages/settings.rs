@@ -97,10 +97,12 @@ pub(crate) fn settings_page(
 
     // The QR is drawn by a demand-driven canvas (SwapChainPanel). The module
     // matrix is kept in a `use_ref` and the canvas repaints whenever it changes.
-    // The canvas owns its device, so there is no device-lifetime juggling.
+    // The effect keys on the matrix itself, so any new key pair (or regenerated
+    // one) repaints the QR.
     let qr_matrix = cx.use_ref::<Option<(Vec<bool>, usize)>>(None);
     let qr_inv = cx.use_invalidator();
-    cx.use_effect((pairing.0,), {
+    let qr_dep = pairing.1.as_ref().and_then(|i| i.matrix.clone());
+    cx.use_effect((qr_dep,), {
         let pairing = pairing.clone();
         let qr_matrix = qr_matrix.clone();
         let qr_inv = qr_inv.clone();
@@ -135,6 +137,8 @@ pub(crate) fn settings_page(
                 // can be moved into the worker thread (it is Send).
                 let set_pairing = set_pairing.clone();
                 std::thread::spawn(move || {
+                    // Always mint a fresh identity, then rebuild the pairing QR.
+                    let _ = crate::tools::ssh_pair::regenerate_keypair();
                     let info = crate::tools::ssh_pair::build_pairing_info();
                     set_pairing.call((next_gen, Some(info)));
                 });

@@ -87,6 +87,15 @@ pub(crate) fn has_keypair() -> bool {
     private_key_path().exists() && public_key_path().exists()
 }
 
+/// Force a brand-new key pair, replacing any existing one in the app's folder.
+/// The Settings page's "Generate key pair" button calls this so clicking it
+/// always produces a fresh identity (and therefore a fresh QR).
+pub(crate) fn regenerate_keypair() -> io::Result<PathBuf> {
+    let _ = std::fs::remove_file(private_key_path());
+    let _ = std::fs::remove_file(public_key_path());
+    generate_keypair()
+}
+
 /// Result of building the pairing QR, safe to show in the UI.
 #[derive(Clone, PartialEq)]
 pub(crate) struct PairingInfo {
