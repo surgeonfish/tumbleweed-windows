@@ -43,7 +43,7 @@ pub(crate) fn simple_card(
 /// The Settings page. It renders inside the app's shared [`RenderCx`] (the same
 /// one every page uses); any shared state is owned by `app` and passed in.
 pub(crate) fn settings_page(
-    _cx: &mut RenderCx,
+    cx: &mut RenderCx,
     theme: RequestedTheme,
     set_theme: SetState<RequestedTheme>,
 ) -> Element {
@@ -72,10 +72,110 @@ pub(crate) fn settings_page(
             }),
     );
 
-    // The card lives inside the scroll view; the title sits above it.
-    let card_stack: Element = vstack((theme_card,)).spacing(8.0).into();
-    let scroll: Element = scroll_view(card_stack)
+    // ---- SSH pairing section ----
+    // State: (generation counter, pairing result). The counter is bumped on
+    // every generation so the QR image element gets a fresh key and re-renders.
+    // use_async_state: its setter is Send, so it can be called from the
+    // background thread that does the keygen + QR work.
+    let (pairing, set_pairing) =
+        cx.use_async_state((0u64, None::<crate::tools::ssh_pair::PairingInfo>));
+    let generation = pairing.0;
+
+    // The QR is drawn by a demand-driven canvas (SwapChainPanel). The module
+    // matrix is kept in a `use_ref` and the canvas repaints whenever it changes.
+    // The canvas owns its device, so there is no device-lifetime juggling.
+    let qr_matrix = cx.use_ref::<Option<(Vec<bool>, usize)>>(None);
+    let qr_inv = cx.use_invalidator();
+    cx.use_effect((pairing.0,), {
+        let pairing = pairing.clone();
+        let qr_matrix = qr_matrix.clone();
+        let qr_inv = qr_inv.clone();
+        move || {
+            if let Some(info) = pairing.1.as_ref()
+                && let Some(m) = info.matrix.as_ref()
+            {
+                *qr_matrix.borrow_mut() = Some((m.to_vec(), info.size));
+                qr_inv.invalidate();
+            }
+        }
+    });
+
+    let ssh_title = TextBlock::new("SSH pairing")
+        .font_size(20.0)
+        .margin(Thickness {
+            left: 0.0,
+            top: 16.0,
+            right: 0.0,
+            bottom: 4.0,
+        });
+
+    let ssh_card = simple_card(
+        "\u{E72E}", // shield / lock
+        "SSH key pair",
+        "Generate an SSH key pair so your phone can pair with this PC.",
+        button("Generate key pair").on_click({
+            let set_pairing = set_pairing.clone();
+            let next_gen = generation + 1;
+            move || {
+                // Clone so the outer (Fn) callback stays callable and the clone
+                // can be moved into the worker thread (it is Send).
+                let set_pairing = set_pairing.clone();
+                std::thread::spawn(move || {
+                    let info = crate::tools::ssh_pair::build_pairing_info();
+                    set_pairing.call((next_gen, Some(info)));
+                });
+            }
+        }),
+    );
+
+    let qr_child: Element = match &pairing.1 {
+        None => text_block::caption(
+            "Tap \"Generate key pair\" first, then expand this to see the QR code.",
+        )
+        .into(),
+        Some(info) if info.error.is_some() => {
+            text_block::caption(info.error.clone().unwrap_or_default()).into()
+        }
+        Some(info) => {
+            let qr_el: Element = match qr_matrix.borrow().as_ref() {
+                Some((m, size)) => {
+                    // Clone so the `'static` canvas draw closure owns its data.
+                    let m = m.clone();
+                    let size = *size;
+                    let size_dips = crate::tools::qr_surface::qr_size(size);
+                    let qr_inv = qr_inv.clone();
+                    canvas_invalidated(&qr_inv, move |ctx| {
+                        crate::tools::qr_surface::draw_qr(ctx, &m, size)
+                    })
+                    .width(size_dips)
+                    .height(size_dips)
+                    .into()
+                }
+                None => text_block::caption("Rendering QR code…").into(),
+            };
+            let meta = format!(
+                "{} · {} · {} · v{}",
+                info.name.as_deref().unwrap_or(""),
+                info.device_type.as_deref().unwrap_or(""),
+                info.ip.as_deref().unwrap_or(""),
+                info.version.as_deref().unwrap_or(""),
+            );
+            vstack((qr_el, text_block::caption(meta)))
+                .spacing(8.0)
+                .into()
+        }
+    };
+
+    let qr_expander: Element = Expander::new(qr_child)
+        .header("Show pairing QR")
+        .expanded(pairing.1.as_ref().is_some_and(|i| i.matrix.is_some()))
         .into();
+
+    // The cards live inside the scroll view; the page title sits above them.
+    let card_stack: Element = vstack((theme_card, ssh_title, ssh_card, qr_expander))
+        .spacing(8.0)
+        .into();
+    let scroll: Element = scroll_view(card_stack).into();
 
     vstack((
         title("Settings").margin(Thickness {

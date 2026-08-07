@@ -466,6 +466,11 @@ fn local_ipv4_addrs() -> Vec<Ipv4Addr> {
     addrs
 }
 
+/// The machine's primary LAN IPv4 (first usable non-loopback address).
+pub(crate) fn lan_ipv4() -> Option<Ipv4Addr> {
+    local_ipv4_addrs().into_iter().next()
+}
+
 /// Write a line to a log file (`%TEMP%\tumbleweed-mdns.log`) so GUI-subsystem
 /// builds (which have no console) still surface mDNS status and errors.
 pub(crate) fn log_msg(msg: &str) {

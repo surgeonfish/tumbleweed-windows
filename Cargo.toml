@@ -4,7 +4,9 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-windows-reactor = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", branch = "master", features = ["canvas"] }
+# GPU drawing session for the QR canvas (SwapChainPanel-backed, owns its device).
+windows-canvas = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
 # Used only for SO_REUSEADDR on the mDNS port (5353) so the advertiser can
 # share the port with any OS mDNS responder.
 socket2 = "0.5"
@@ -12,6 +14,9 @@ socket2 = "0.5"
 windows = { git = "https://github.com/microsoft/windows-rs", branch = "master", features = ["Storage_Pickers", "Storage_Search", "Storage_Streams", "winuser", "shobjidl_core", "minwindef", "windef"] }
 # Non-blocking wait on the picker's IAsyncOperation (Async::when).
 windows-future = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
+# QR code generation for SSH pairing (Settings page); rendered to an
+# in-memory canvas via the reactor's SwapChainPanel path (no temp file).
+qrcode = "0.14"
 
 [build-dependencies]
 windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
