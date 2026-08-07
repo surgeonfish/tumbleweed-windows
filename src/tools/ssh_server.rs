@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +23,7 @@ use russh_sftp::protocol::{
 };
 
 use async_trait::async_trait;
-use russh::server::{Auth, Config, Msg, Server as ServerTrait, Session};
+use russh::server::{Auth, Config, Msg, Session};
 use russh::{Channel, ChannelId, CryptoVec};
 use russh_keys::key::PublicKey;
 use russh_keys::PublicKeyBase64;
@@ -136,6 +135,10 @@ pub(crate) fn add_authorized_key(line: &str) {
 // ---- the server ----
 
 /// Start the SSH server on a background thread. Non-blocking.
+///
+/// The server reloads its host key whenever the key file changes (e.g. after a
+/// "Generate key pair" click), so the key the server presents always matches
+/// the `pk` embedded in the QR code.
 pub(crate) fn start() {
     std::thread::spawn(|| {
         let runtime = match tokio::runtime::Runtime::new() {
@@ -145,55 +148,113 @@ pub(crate) fn start() {
                 return;
             }
         };
-        if let Err(e) = runtime.block_on(run_server()) {
-            crate::tools::mdns::log_msg(&format!("[ssh] server error: {e}"));
-        }
+        // `run_server` returns Ok(true) when the host key changed and the
+        // listener needs to be re-created with the new key.
+        let _ = runtime.block_on(async {
+            loop {
+                match run_server().await {
+                    Ok(true) => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
+                    Ok(false) => break,
+                    Err(e) => {
+                        crate::tools::mdns::log_msg(&format!("[ssh] server error: {e}"));
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                }
+            }
+        });
     });
 }
 
-async fn run_server() -> anyhow::Result<()> {
-    // Ensure the one-time pairing token exists up-front (the QR also embeds it).
-    let _ = crate::tools::ssh_pair::pairing_token();
-
-    // The app's Ed25519 identity doubles as the SSH host key.
+/// Build a russh config with the *current* host key from disk. Called once per
+/// accepted connection so a regenerated key takes effect immediately.
+fn build_config() -> anyhow::Result<Arc<Config>> {
     let key_text = fs::read_to_string(crate::tools::ssh_pair::private_key_path())
         .map_err(|e| anyhow::anyhow!("read host key: {e}"))?;
     let host_key = russh_keys::decode_secret_key(&key_text, None)
         .map_err(|e| anyhow::anyhow!("decode host key: {e}"))?;
-
-    let config = Arc::new(Config {
+    Ok(Arc::new(Config {
         inactivity_timeout: Some(Duration::from_secs(3600)),
         auth_rejection_time: Duration::from_secs(3),
         auth_rejection_time_initial: Some(Duration::from_secs(0)),
         keys: vec![host_key],
         ..Default::default()
-    });
-
-    let mut server = Server {
-        clients: Arc::new(Mutex::new(HashMap::new())),
-    };
-    crate::tools::mdns::log_msg(&format!("[ssh] listening on 0.0.0.0:{SSH_PORT}"));
-    server.run_on_address(config, ("0.0.0.0", SSH_PORT)).await?;
-    Ok(())
+    }))
 }
 
-#[derive(Clone)]
-struct Server {
-    clients: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
-}
-
-impl ServerTrait for Server {
-    type Handler = SshHandler;
-
-    fn new_client(&mut self, _: Option<SocketAddr>) -> Self::Handler {
-        SshHandler {
-            clients: Arc::clone(&self.clients),
-            pairing_key: None,
+/// A cheap fingerprint of the host-key file, used to detect regenerations.
+fn key_version() -> u64 {
+    match std::fs::metadata(crate::tools::ssh_pair::private_key_path()) {
+        Ok(m) => {
+            let len = m.len();
+            let mods = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            len ^ mods.rotate_left(17)
         }
+        Err(_) => 0,
     }
+}
 
-    fn handle_session_error(&mut self, error: <Self::Handler as russh::server::Handler>::Error) {
-        crate::tools::mdns::log_msg(&format!("[ssh] session error: {error:#}"));
+/// Bind the listener and accept connections until the host key changes
+/// (returns `Ok(true)` to ask for a restart) or a fatal error occurs.
+async fn run_server() -> anyhow::Result<bool> {
+    // Ensure the one-time pairing token exists up-front (the QR also embeds it).
+    let _ = crate::tools::ssh_pair::pairing_token();
+
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", SSH_PORT))
+        .await
+        .map_err(|e| anyhow::anyhow!("bind 0.0.0.0:{SSH_PORT}: {e}"))?;
+    crate::tools::mdns::log_msg(&format!("[ssh] listening on 0.0.0.0:{SSH_PORT}"));
+
+    let key_ver = key_version();
+    loop {
+        tokio::select! {
+            // Poll for a host-key regeneration every second.
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if key_version() != key_ver {
+                    crate::tools::mdns::log_msg("[ssh] host key changed; restarting listener");
+                    return Ok(true);
+                }
+            }
+            res = listener.accept() => {
+                let (socket, _addr) = match res {
+                    Ok(x) => x,
+                    Err(e) => {
+                        crate::tools::mdns::log_msg(&format!("[ssh] accept: {e}"));
+                        continue;
+                    }
+                };
+                let handler = SshHandler {
+                    clients: Arc::new(Mutex::new(HashMap::new())),
+                    pairing_key: None,
+                };
+                let config = match build_config() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        crate::tools::mdns::log_msg(&format!("[ssh] config: {e}"));
+                        continue;
+                    }
+                };
+                tokio::spawn(async move {
+                    match russh::server::run_stream(config, socket, handler).await {
+                        Ok(session) => {
+                            // Await the session future to run the connection to completion.
+                            let _ = session.await;
+                        }
+                        Err(e) => {
+                            crate::tools::mdns::log_msg(&format!("[ssh] connection error: {e:#}"));
+                        }
+                    }
+                });
+            }
+        }
     }
 }
 
