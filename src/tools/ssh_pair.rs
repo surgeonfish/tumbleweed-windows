@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 
 /// The app's data folder, where the SSH identity is stored.
-fn app_folder() -> PathBuf {
+pub(crate) fn app_folder() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("APPDATA"))
         .map(PathBuf::from)
@@ -21,12 +21,49 @@ fn ssh_dir() -> PathBuf {
     app_folder()
 }
 
-fn private_key_path() -> PathBuf {
+pub(crate) fn private_key_path() -> PathBuf {
     ssh_dir().join("tumbleweed_ed25519")
 }
 
 fn public_key_path() -> PathBuf {
     ssh_dir().join("tumbleweed_ed25519.pub")
+}
+
+/// The one-time pairing token: a random secret the QR encodes so a phone can
+/// register its own public key on this PC over SSH (bootstrap). Kept in the
+/// app's folder; refreshed whenever the key pair is regenerated.
+pub(crate) fn pairing_token() -> Option<String> {
+    let dir = ssh_dir();
+    let path = dir.join("pairing_token");
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    // Fresh 32-byte token. Not security-critical (one-time LAN bootstrap), but
+    // mix a monotonic counter, process id, and the clock so it is not guessable
+    // from a single timestamp.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut state = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
+        ^ (std::process::id() as u64) << 32
+        ^ COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    for b in bytes.iter_mut() {
+        // xorshift64
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *b = (state & 0xff) as u8;
+    }
+    let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(&path, &token);
+    }
+    Some(token)
 }
 
 /// Locate `ssh-keygen` (OpenSSH ships one with Windows 10+).
@@ -101,6 +138,8 @@ pub(crate) fn has_keypair() -> bool {
 pub(crate) fn regenerate_keypair() -> io::Result<PathBuf> {
     let _ = std::fs::remove_file(private_key_path());
     let _ = std::fs::remove_file(public_key_path());
+    // A regenerated identity needs a fresh pairing token too.
+    let _ = std::fs::remove_file(ssh_dir().join("pairing_token"));
     generate_keypair()
 }
 
@@ -149,8 +188,9 @@ pub(crate) fn build_pairing_info() -> PairingInfo {
         .to_string();
     let device_type = "pc";
     let version = env!("CARGO_PKG_VERSION").to_string();
+    let token = pairing_token().unwrap_or_default();
     let payload = format!(
-        "{{\"pk\":\"{pk}\",\"ip\":\"{ip}\",\"v\":\"{version}\",\"name\":\"{name}\",\"type\":\"{device_type}\"}}"
+        "{{\"pk\":\"{pk}\",\"ip\":\"{ip}\",\"v\":\"{version}\",\"name\":\"{name}\",\"type\":\"{device_type}\",\"token\":\"{token}\"}}"
     );
     let (matrix, size) = match qr_matrix(&payload) {
         Ok(v) => v,

@@ -17,6 +17,19 @@ windows-future = { git = "https://github.com/microsoft/windows-rs", branch = "ma
 # QR code generation for SSH pairing (Settings page); rendered to an
 # in-memory canvas via the reactor's SwapChainPanel path (no temp file).
 qrcode = "0.14"
+# Embedded SSH server (receive SCP uploads) + client (push to the phone).
+# Pure-Rust, no admin or Windows service required; runs on port 2222.
+russh = "0.45"
+russh-keys = "0.45"
+# SFTP server subsystem for reliable SSH file transfers (JSch ChannelSftp client).
+russh-sftp = "2.0.0-beta.4"
+# Async runtime for russh (spawned on a dedicated background thread).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs", "sync"] }
+# Error type used by the russh server handler.
+anyhow = "1"
+async-trait = "0.1"
+# Bridge russh's internal `log` records into the app's diagnostics file.
+log = "0.4"
 
 [build-dependencies]
 windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", branch = "master" }

@@ -6,5 +6,6 @@ pub mod qr_surface;
 pub mod server;
 pub mod settings_store;
 pub mod ssh_pair;
+pub mod ssh_server;
 pub mod transfer_progress;
 pub mod upload_gate;

@@ -36,14 +36,15 @@ fn app(cx: &mut RenderCx) -> Element {
     let default = cx.use_memo((), || default_folder());
     let (current_path, set_current_path) = cx.use_state(default.clone());
 
-    // Persist the folder and keep the HTTP file server pointing at the same
-    // folder the user is currently exploring.
+    // Persist the folder and keep the HTTP + SSH (SCP) servers pointing at the
+    // same folder the user is currently exploring.
     cx.use_effect((current_path.clone(),), {
         let current_path = current_path.clone();
         let set_search_target = set_search_target.clone();
         move || {
             save_last_folder(&current_path);
             tools::server::set_root(current_path.clone());
+            tools::ssh_server::set_share_root(current_path.clone());
             // A folder change invalidates any previously searched row index.
             set_search_target.call(None);
         }
@@ -343,6 +344,11 @@ fn app(cx: &mut RenderCx) -> Element {
 }
 
 fn main() -> Result<()> {
+    // Bridge the `log` crate (used by russh) into the app's diagnostics file.
+    static LOGGER: tools::ssh_server::FileLogger = tools::ssh_server::FileLogger;
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Debug);
+
     bootstrap()?;
 
     // The app is the server: advertise "tumbleweed.local" over mDNS and serve
@@ -359,6 +365,8 @@ fn main() -> Result<()> {
             println!("[server] serve error: {e}");
         }
     });
+    // Embedded SSH server for SCP uploads from paired phones.
+    tools::ssh_server::start();
 
     App::new()
         .backdrop(Backdrop::Mica)
