@@ -81,6 +81,12 @@ pub(crate) fn public_key() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// Whether a key pair already exists in the app's folder. The Settings page uses
+/// this to load an existing identity on startup instead of forcing a regenerate.
+pub(crate) fn has_keypair() -> bool {
+    private_key_path().exists() && public_key_path().exists()
+}
+
 /// Result of building the pairing QR, safe to show in the UI.
 #[derive(Clone, PartialEq)]
 pub(crate) struct PairingInfo {

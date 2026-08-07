@@ -81,6 +81,20 @@ pub(crate) fn settings_page(
         cx.use_async_state((0u64, None::<crate::tools::ssh_pair::PairingInfo>));
     let generation = pairing.0;
 
+    // On page load, if a key pair already exists in the app's folder, load it
+    // and show its QR without requiring the user to regenerate.
+    cx.use_effect((), {
+        let set_pairing = set_pairing.clone();
+        move || {
+            if crate::tools::ssh_pair::has_keypair() {
+                std::thread::spawn(move || {
+                    let info = crate::tools::ssh_pair::build_pairing_info();
+                    set_pairing.call((1u64, Some(info)));
+                });
+            }
+        }
+    });
+
     // The QR is drawn by a demand-driven canvas (SwapChainPanel). The module
     // matrix is kept in a `use_ref` and the canvas repaints whenever it changes.
     // The canvas owns its device, so there is no device-lifetime juggling.
