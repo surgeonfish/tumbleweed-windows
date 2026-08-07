@@ -43,9 +43,14 @@ impl log::Log for FileLogger {
     }
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
             crate::tools::mdns::log_msg(&format!(
-                "[log/{}] {}",
+                "[log/{} {:03}.{:03}] {}",
                 record.level(),
+                t.as_secs() % 100_000,
+                t.subsec_millis(),
                 record.args()
             ));
         }
@@ -182,6 +187,17 @@ fn build_config() -> anyhow::Result<Arc<Config>> {
         auth_rejection_time: Duration::from_secs(3),
         auth_rejection_time_initial: Some(Duration::from_secs(0)),
         keys: vec![host_key],
+        // Advertise a larger channel max packet so clients can send bigger SFTP
+        // write packets; fewer, larger writes reduce per-write round trips.
+        maximum_packet_size: 262144,
+        // Prefer AES-CTR (hardware AES-NI); far faster than chacha20-poly1305.
+        preferred: russh::Preferred {
+            cipher: std::borrow::Cow::Borrowed(&[
+                russh::cipher::AES_128_CTR,
+                russh::cipher::AES_256_CTR,
+            ]),
+            ..Default::default()
+        },
         ..Default::default()
     }))
 }
@@ -232,6 +248,13 @@ async fn run_server() -> anyhow::Result<bool> {
                         continue;
                     }
                 };
+                // Disable Nagle: the server sends many small SFTP status packets
+                // (one per write ack); Nagle + delayed ACK would otherwise stall
+                // every round trip and cap throughput at a few MB/s regardless
+                // of the client's pipelining.
+                if let Err(e) = socket.set_nodelay(true) {
+                    crate::tools::mdns::log_msg(&format!("[ssh] set_nodelay: {e}"));
+                }
                 let handler = SshHandler {
                     clients: Arc::new(Mutex::new(HashMap::new())),
                     pairing_key: None,
