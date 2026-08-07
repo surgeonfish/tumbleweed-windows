@@ -591,7 +591,7 @@ impl russh_sftp::server::Handler for SftpSession {
 
     async fn write(
         &mut self,
-        _id: u32,
+        id: u32,
         handle: String,
         offset: u64,
         data: Vec<u8>,
@@ -606,8 +606,10 @@ impl russh_sftp::server::Handler for SftpSession {
         file.write_all(&data)
             .await
             .map_err(|_| StatusCode::Failure)?;
+        // Echo the request id back so the client can match acks to its writes.
+        // (Reply ids must mirror the request id per the SFTP spec.)
         Ok(Status {
-            id: 0,
+            id,
             status_code: StatusCode::Ok,
             error_message: "Ok".to_string(),
             language_tag: "en-US".to_string(),
