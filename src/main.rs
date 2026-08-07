@@ -257,7 +257,12 @@ fn app(cx: &mut RenderCx) -> Element {
             let upload_id = upload.id;
             let upload_name = upload.name.clone();
             ContentDialog::new("Incoming upload")
-                .content(format!("{}  ·  {} bytes", upload.name, upload.size))
+                .content(if upload.size > 0 {
+                    format!("{}  ·  {} bytes", upload.name, upload.size)
+                } else {
+                    // SFTP opens don't carry the file size up front.
+                    format!("{}  ·  (size unknown)", upload.name)
+                })
                 .primary_button_text("Save…")
                 .close_button_text("Cancel")
                 .is_open(true)

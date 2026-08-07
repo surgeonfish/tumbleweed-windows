@@ -22,6 +22,7 @@ use russh_sftp::protocol::{
     Attrs, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
 
+use super::upload_gate::{self, UploadDecision};
 use async_trait::async_trait;
 use russh::server::{Auth, Config, Msg, Session};
 use russh::{Channel, ChannelId, CryptoVec};
@@ -427,10 +428,14 @@ fn resolve_path(root: &Path, path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Handles one SFTP client (a paired phone), writing uploads into `root`.
+/// Handles one SFTP client (a paired phone). Uploads are only written after the
+/// user confirms them in the UI; see [`SftpSession::open`].
 struct SftpSession {
     root: PathBuf,
     files: HashMap<String, tokio::fs::File>,
+    /// Upload-gate id while awaiting the user's confirmation in `open`, so the
+    /// queued dialog can be cancelled if the connection dies.
+    opening_gate: Option<u64>,
 }
 
 impl SftpSession {
@@ -438,6 +443,60 @@ impl SftpSession {
         Self {
             root,
             files: HashMap::new(),
+            opening_gate: None,
+        }
+    }
+
+    /// Fallback used when the confirmation bridge isn't ready: write straight
+    /// into `root`, mirroring the pre-confirmation behaviour.
+    async fn open_direct(&mut self, id: u32, filename: String) -> Result<Handle, StatusCode> {
+        let Some(path) = resolve_path(&self.root, &filename) else {
+            return Err(StatusCode::Failure);
+        };
+        if let Some(parent) = path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return Err(StatusCode::Failure);
+            }
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await
+            .map_err(|_| StatusCode::Failure)?;
+        let handle = filename.clone();
+        self.files.insert(handle.clone(), file);
+        Ok(Handle { id, handle })
+    }
+}
+
+impl Drop for SftpSession {
+    fn drop(&mut self) {
+        // The connection died before the user answered the pending
+        // confirmation: drop the queued dialog so the UI doesn't wait forever.
+        if let Some(id) = self.opening_gate.take() {
+            upload_gate::fail_upload(id);
+        }
+    }
+}
+
+/// Wait for the UI thread's Save/Reject decision without blocking a tokio
+/// worker: poll the std mpsc receiver with a short timeout and yield between
+/// polls. Returns `None` if the user never answers within 10 minutes.
+async fn await_decision(rx: std::sync::mpsc::Receiver<UploadDecision>) -> Option<UploadDecision> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(d) => return Some(d),
+            Err(RecvTimeoutError::Timeout) => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(RecvTimeoutError::Disconnected) => return None,
         }
     }
 }
@@ -477,12 +536,43 @@ impl russh_sftp::server::Handler for SftpSession {
         id: u32,
         filename: String,
         _pflags: OpenFlags,
-        _attrs: FileAttributes,
+        attrs: FileAttributes,
     ) -> Result<Handle, StatusCode> {
-        let Some(path) = resolve_path(&self.root, &filename) else {
-            return Err(StatusCode::Failure);
+        let name = filename
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&filename)
+            .to_string();
+        // Ask the UI thread to confirm before saving anything. If the
+        // confirmation bridge isn't up yet (app still starting), fall back to
+        // saving directly into the share root so transfers still work.
+        let Some((gate_id, rx)) =
+            upload_gate::submit_upload(name.clone(), attrs.size.unwrap_or(0))
+        else {
+            return self.open_direct(id, filename).await;
         };
-        if let Some(parent) = path.parent() {
+        self.opening_gate = Some(gate_id);
+        crate::tools::mdns::log_msg(&format!(
+            "[ssh] incoming {name} waiting for user confirmation"
+        ));
+        let decision = await_decision(rx).await;
+        self.opening_gate = None;
+        upload_gate::remove_upload(gate_id);
+
+        // Save only where the user picked; a Reject or timeout fails the open
+        // so the phone's `put` reports the upload as failed.
+        let dest = match decision {
+            Some(UploadDecision::Save(dir)) => dir.join(&name),
+            _ => {
+                crate::tools::mdns::log_msg(&format!("[ssh] rejected upload {name}"));
+                return Err(StatusCode::Failure);
+            }
+        };
+        crate::tools::mdns::log_msg(&format!(
+            "[ssh] saving {name} -> {}",
+            dest.display()
+        ));
+        if let Some(parent) = dest.parent() {
             if fs::create_dir_all(parent).is_err() {
                 return Err(StatusCode::Failure);
             }
@@ -491,7 +581,7 @@ impl russh_sftp::server::Handler for SftpSession {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&path)
+            .open(&dest)
             .await
             .map_err(|_| StatusCode::Failure)?;
         let handle = filename.clone();
