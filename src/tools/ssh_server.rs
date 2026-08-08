@@ -452,6 +452,17 @@ impl russh::server::Handler for SshHandler {
             return Ok(());
         }
 
+        if trimmed == "tumbleweed ping" {
+            // Liveness probe used by the Devices page to check whether a paired
+            // device is online: reply "ok" and close immediately.
+            let _ = session.channel_success(channel);
+            let _ = session.data(channel, CryptoVec::from(b"ok\n".to_vec()));
+            let _ = session.eof(channel);
+            let _ = session.exit_status_request(channel, 0);
+            let _ = session.close(channel);
+            return Ok(());
+        }
+
         if trimmed == "tumbleweed transfer" {
             // Transfer announce: the sender writes "<size>\n<name>\n" before
             // opening the SFTP handle, so we can show a determinate progress

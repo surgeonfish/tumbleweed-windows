@@ -240,3 +240,61 @@ async fn open_ssh_session(ip: IpAddr, port: u16) -> anyhow::Result<client::Handl
     }
     Ok(session)
 }
+
+/// Check whether a paired device is online by connecting over SSH and running
+/// the `tumbleweed ping` exec command. True only if the handshake + exec
+/// succeed — i.e. the peer is a reachable Tumbleweed device. Blocking; call on
+/// a background thread.
+pub(crate) fn is_online(ip: &str) -> bool {
+    let Ok(ip) = ip.parse::<IpAddr>() else {
+        return false;
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    runtime.block_on(async move { ping(ip, super::ssh_server::SSH_PORT).await })
+}
+
+/// Async half of [`is_online`]: connect, exec `tumbleweed ping`, and treat a
+/// `Success` or graceful channel close as "online".
+async fn ping(ip: IpAddr, port: u16) -> bool {
+    let session = match open_ssh_session(ip, port).await {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut ch = match session.channel_open_session().await {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if ch.exec(true, "tumbleweed ping").await.is_err() {
+        return false;
+    }
+    let mut online = false;
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        async {
+            loop {
+                match ch.wait().await {
+                    Some(russh::ChannelMsg::Success) => {
+                        online = true;
+                        break;
+                    }
+                    Some(russh::ChannelMsg::Failure) => break,
+                    Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
+                        online = true;
+                        break;
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+        },
+    )
+    .await;
+    let _ = ch.close().await;
+    online
+}

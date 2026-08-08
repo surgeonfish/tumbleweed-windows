@@ -14,7 +14,40 @@ fn kind_icon(kind: &str) -> &'static str {
 }
 
 /// A card describing one device in three columns: icon | name + IP | version.
-fn device_card(name: &str, kind: &str, version: &str, ips: &[String]) -> Element {
+/// `online` (Some) appends an Online/Offline indicator to the trailing column,
+/// used for paired devices to show their SSH reachability.
+fn device_card(
+    name: &str,
+    kind: &str,
+    version: &str,
+    ips: &[String],
+    online: Option<bool>,
+) -> Element {
+    let mut trailing: Vec<Element> = vec![
+        TextBlock::new("\u{E890}") // Tag
+            .font_family("Segoe Fluent Icons")
+            .font_size(14.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .into(),
+        TextBlock::new(format!("v{version}"))
+            .font_size(12.0)
+            .vertical_alignment(VerticalAlignment::Center)
+            .into(),
+    ];
+    if let Some(on) = online {
+        let (label, color) = if on {
+            ("Online", Color { a: 255, r: 76, g: 175, b: 80 })
+        } else {
+            ("Offline", Color { a: 255, r: 150, g: 150, b: 150 })
+        };
+        trailing.push(
+            TextBlock::new(format!("\u{25CF} {label}"))
+                .font_size(12.0)
+                .foreground(color)
+                .vertical_alignment(VerticalAlignment::Center)
+                .into(),
+        );
+    }
     border(
         grid((
             TextBlock::new(kind_icon(kind))
@@ -29,18 +62,10 @@ fn device_card(name: &str, kind: &str, version: &str, ips: &[String]) -> Element
             .rows([GridLength::Auto, GridLength::Auto])
             .vertical_alignment(VerticalAlignment::Center)
             .grid_column(1),
-            hstack((
-                TextBlock::new("\u{E890}") // Tag
-                    .font_family("Segoe Fluent Icons")
-                    .font_size(14.0)
-                    .vertical_alignment(VerticalAlignment::Center),
-                TextBlock::new(format!("v{version}"))
-                    .font_size(12.0)
-                    .vertical_alignment(VerticalAlignment::Center),
-            ))
-            .spacing(4.0)
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(2),
+            hstack(trailing)
+                .spacing(4.0)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(2),
         ))
         .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
         .column_spacing(12.0)
@@ -55,32 +80,55 @@ fn device_card(name: &str, kind: &str, version: &str, ips: &[String]) -> Element
 }
 
 /// A card for a discovered peer, with the kind/version from its mDNS TXT
-/// record (a blank version is shown as "unknown").
-fn peer_card(d: &DiscoveredDevice) -> Element {
+/// record (a blank version is shown as "unknown"). `online` is the paired
+/// device's SSH reachability (None for this device / new devices).
+fn peer_card(d: &DiscoveredDevice, online: Option<bool>) -> Element {
     let version = if d.version.is_empty() {
         "unknown"
     } else {
         &d.version
     };
-    device_card(&d.name, &d.kind, version, &[d.ip.to_string()])
+    device_card(&d.name, &d.kind, version, &[d.ip.to_string()], online)
 }
 
 /// The Devices page: this device, then the devices already paired with this
 /// PC, then the new devices discovered on the LAN. Renders inside the app's
 /// shared [`RenderCx`]; the discovered list is owned by `app` and passed in.
 pub(crate) fn devices_page(
-    _cx: &mut RenderCx,
+    cx: &mut RenderCx,
     devices: &[DiscoveredDevice],
     this_name: &str,
     this_ips: &[String],
     this_version: &str,
 ) -> Element {
     // This device card — always shown as a PC (it's a Windows app).
-    let this_card = device_card(this_name, THIS_DEVICE_KIND, this_version, this_ips);
+    let this_card = device_card(this_name, THIS_DEVICE_KIND, this_version, this_ips, None);
+
+    // Online status for paired devices, checked over SSH (`tumbleweed ping`)
+    // in the background and keyed by IP.
+    let paired_ips = crate::tools::ssh_server::paired_device_ips();
+    let (online, set_online) =
+        cx.use_async_state((0u64, std::collections::HashMap::<String, bool>::new()));
+    let generation = online.0;
+    cx.use_effect((paired_ips.clone(),), {
+        let set_online = set_online.clone();
+        let paired_ips = paired_ips.clone();
+        move || {
+            if paired_ips.is_empty() {
+                return;
+            }
+            std::thread::spawn(move || {
+                let map: std::collections::HashMap<String, bool> = paired_ips
+                    .iter()
+                    .map(|ip| (ip.clone(), crate::tools::ssh_send::is_online(ip)))
+                    .collect();
+                set_online.call((generation + 1, map));
+            });
+        }
+    });
 
     // Split the discovered peers into already-paired (registered a key during
     // pairing) and new ones. A device that already paired is not "new".
-    let paired_ips = crate::tools::ssh_server::paired_device_ips();
     let (paired, new): (Vec<&DiscoveredDevice>, Vec<&DiscoveredDevice>) = devices
         .iter()
         .partition(|d| paired_ips.iter().any(|ip| ip == &d.ip.to_string()));
@@ -93,7 +141,8 @@ pub(crate) fn devices_page(
     if !paired.is_empty() {
         children.push(body_strong("Paired devices").into());
         for d in paired {
-            children.push(peer_card(d));
+            let on = online.1.get(&d.ip.to_string()).copied();
+            children.push(peer_card(d, on));
         }
     }
 
@@ -108,7 +157,7 @@ pub(crate) fn devices_page(
         );
     } else {
         for d in new {
-            children.push(peer_card(d));
+            children.push(peer_card(d, None));
         }
     }
 
