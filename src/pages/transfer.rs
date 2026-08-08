@@ -173,25 +173,36 @@ fn history_list(rows: Vec<Row>) -> Element {
         // Right-hand column: progress bar + "done / total" caption, or empty.
         let right = match r.progress {
             Some((done, total)) => {
-                let frac = if total > 0 {
-                    (done as f64) / (total as f64) * 100.0
+                // When the total is unknown (0) show an indeterminate bar so
+                // the row still visibly animates during the transfer.
+                let bar: Element = if total > 0 {
+                    ProgressBar::new((done as f64) / (total as f64) * 100.0)
+                        .height(4.0)
+                        .width(100.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .into()
                 } else {
-                    0.0
+                    ProgressBar::indeterminate()
+                        .height(4.0)
+                        .width(100.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .into()
+                };
+                let caption = if total > 0 {
+                    format!("{} / {}", fmt_bytes(done), fmt_bytes(total))
+                } else {
+                    fmt_bytes(done)
                 };
                 // A Grid (not an hstack) so the ProgressBar gets a finite
                 // STAR width — in a horizontal StackPanel it is measured with
                 // infinite width and collapses to nothing.
                 grid((
-                    TextBlock::new(format!("{} / {}", fmt_bytes(done), fmt_bytes(total)))
+                    TextBlock::new(caption)
                         .font_size(11.0)
                         .foreground(Color { a: 255, r: 130, g: 130, b: 130 })
                         .vertical_alignment(VerticalAlignment::Center)
                         .grid_column(0),
-                    ProgressBar::new(frac)
-                        .height(4.0)
-                        .width(100.0)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(1),
+                    bar.grid_column(1),
                 ))
                 .columns([GridLength::Auto, GridLength::STAR])
                 .column_spacing(8.0)

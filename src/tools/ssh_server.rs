@@ -28,10 +28,11 @@ use russh::server::{Auth, Config, Msg, Session};
 use russh::{Channel, ChannelId, CryptoVec};
 use russh_keys::key::PublicKey;
 use russh_keys::PublicKeyBase64;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-/// The SSH port every Tumbleweed device listens on (mirrors `server::HTTP_PORT`).
+/// The SSH port every Tumbleweed device listens on. The phone's embedded server
+/// uses the same port, and the client ([`super::ssh_send`]) connects to it.
 pub const SSH_PORT: u16 = 2222;
 
 /// Bridges `log` records (russh's internal diagnostics) into the app's log file.
@@ -266,6 +267,7 @@ async fn run_server() -> anyhow::Result<bool> {
                 let handler = SshHandler {
                     clients: Arc::new(Mutex::new(HashMap::new())),
                     pairing_key: None,
+                    pending_sizes: Arc::new(Mutex::new(HashMap::new())),
                 };
                 let config = match build_config() {
                     Ok(c) => c,
@@ -295,6 +297,9 @@ struct SshHandler {
     /// Set when a client authenticates via the one-time pairing token; the key
     /// offered is the phone's public key, registered by `tumbleweed add-key`.
     pairing_key: Option<PublicKey>,
+    /// Filename -> announced size from `tumbleweed transfer` exec messages, so
+    /// a subsequent SFTP open can show a determinate progress bar.
+    pending_sizes: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl SshHandler {
@@ -395,6 +400,55 @@ impl russh::server::Handler for SshHandler {
             return Ok(());
         }
 
+        if trimmed == "tumbleweed transfer" {
+            // Transfer announce: the sender writes "<size>\n<name>\n" before
+            // opening the SFTP handle, so we can show a determinate progress
+            // bar (SFTP itself never carries a total size).
+            //
+            // CRITICAL: this handler must RETURN immediately after sending the
+            // exec-request ack. russh writes session replies from the same task
+            // that runs the handler, so blocking here (e.g. awaiting read_line)
+            // would prevent the channel_success reply from ever being written,
+            // and JSch (the Android sender) times out in connect() waiting for
+            // it. Instead we read the announce in a spawned task and, once the
+            // size is recorded, write "ok" back — the sender waits for that
+            // before issuing its SFTP open, so the size is always in place.
+            let channel_obj = self.clients.lock().await.remove(&channel);
+            let Some(ch) = channel_obj else {
+                let _ = session.channel_failure(channel);
+                return Ok(());
+            };
+            let _ = session.channel_success(channel);
+            let pending = self.pending_sizes.clone();
+            tokio::spawn(async move {
+                let mut stream = ch.into_stream();
+                let mut reader = tokio::io::BufReader::new(&mut stream);
+                let mut size_line = String::new();
+                let mut name_line = String::new();
+                // Bound the read so a stalled sender can't leak this task.
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    async {
+                        let _ = reader.read_line(&mut size_line).await;
+                        let _ = reader.read_line(&mut name_line).await;
+                    },
+                )
+                .await;
+                if let Ok(size) = size_line.trim().parse::<u64>() {
+                    let name = name_line.trim();
+                    if !name.is_empty() {
+                        pending.lock().await.insert(name.to_string(), size);
+                        crate::tools::mdns::log_msg(&format!("[ssh] announce {name} size={size}"));
+                    } else {
+                        crate::tools::mdns::log_msg("[ssh] bad transfer announce (empty name)");
+                    }
+                } else {
+                    crate::tools::mdns::log_msg("[ssh] bad transfer announce (bad size)");
+                }
+            });
+            return Ok(());
+        }
+
         if trimmed.starts_with("scp ") {
             // Acknowledge the exec request; the client then speaks the scp
             // protocol, starting by waiting for our initial '\0'. Run the
@@ -429,7 +483,7 @@ impl russh::server::Handler for SshHandler {
             let channel = self.clients.lock().await.remove(&channel_id);
             if let Some(ch) = channel {
                 let _ = session.channel_success(channel_id);
-                let sftp = SftpSession::new(share_root());
+                let sftp = SftpSession::new(share_root(), self.pending_sizes.clone());
                 crate::tools::mdns::log_msg("[ssh] sftp subsystem started");
                 russh_sftp::server::run(ch.into_stream(), sftp).await;
                 crate::tools::mdns::log_msg("[ssh] sftp subsystem ended");
@@ -464,23 +518,36 @@ fn resolve_path(root: &Path, path: &str) -> Option<PathBuf> {
 struct SftpSession {
     root: PathBuf,
     files: HashMap<String, tokio::fs::File>,
+    /// Per-open-handle transfer progress: (file name, total bytes, done bytes)
+    /// so the Transfer page can show a live bar for incoming files.
+    progress: HashMap<String, (String, u64, u64)>,
     /// Upload-gate id while awaiting the user's confirmation in `open`, so the
     /// queued dialog can be cancelled if the connection dies.
     opening_gate: Option<u64>,
+    /// Filename -> announced size shared with the `tumbleweed transfer` exec
+    /// handler, so opens can show a determinate progress bar.
+    pending_sizes: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl SftpSession {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, pending_sizes: Arc<Mutex<HashMap<String, u64>>>) -> Self {
         Self {
             root,
             files: HashMap::new(),
+            progress: HashMap::new(),
             opening_gate: None,
+            pending_sizes,
         }
     }
 
     /// Fallback used when the confirmation bridge isn't ready: write straight
     /// into `root`, mirroring the pre-confirmation behaviour.
-    async fn open_direct(&mut self, id: u32, filename: String) -> Result<Handle, StatusCode> {
+    async fn open_direct(&mut self, id: u32, filename: String, total: u64) -> Result<Handle, StatusCode> {
+        let name = filename
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&filename)
+            .to_string();
         let Some(path) = resolve_path(&self.root, &filename) else {
             return Err(StatusCode::Failure);
         };
@@ -498,6 +565,8 @@ impl SftpSession {
             .map_err(|_| StatusCode::Failure)?;
         let handle = filename.clone();
         self.files.insert(handle.clone(), file);
+        self.progress.insert(handle.clone(), (name.clone(), total, 0));
+        crate::tools::transfer_progress::start(&name, false, total);
         Ok(Handle { id, handle })
     }
 }
@@ -567,20 +636,39 @@ impl russh_sftp::server::Handler for SftpSession {
         id: u32,
         filename: String,
         _pflags: OpenFlags,
-        attrs: FileAttributes,
+        _attrs: FileAttributes,
     ) -> Result<Handle, StatusCode> {
         let name = filename
             .rsplit(['/', '\\'])
             .next()
             .unwrap_or(&filename)
             .to_string();
+        // The sender announces the size on a `tumbleweed transfer` exec channel
+        // right before this open. The announce bytes always arrive before the
+        // OPEN (same connection), but they're recorded on a separate task, so
+        // poll briefly for the size (breaking as soon as it appears). Plain
+        // SFTP clients announce nothing and fall through with total 0 -> an
+        // indeterminate bar.
+        let total = match self.pending_sizes.lock().await.remove(&name) {
+            Some(size) => size,
+            None => {
+                let mut total = 0u64;
+                let deadline = std::time::Instant::now() + Duration::from_millis(500);
+                while std::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    if let Some(size) = self.pending_sizes.lock().await.remove(&name) {
+                        total = size;
+                        break;
+                    }
+                }
+                total
+            }
+        };
         // Ask the UI thread to confirm before saving anything. If the
         // confirmation bridge isn't up yet (app still starting), fall back to
         // saving directly into the share root so transfers still work.
-        let Some((gate_id, rx)) =
-            upload_gate::submit_upload(name.clone(), attrs.size.unwrap_or(0))
-        else {
-            return self.open_direct(id, filename).await;
+        let Some((gate_id, rx)) = upload_gate::submit_upload(name.clone(), total) else {
+            return self.open_direct(id, filename, total).await;
         };
         self.opening_gate = Some(gate_id);
         crate::tools::mdns::log_msg(&format!(
@@ -617,6 +705,8 @@ impl russh_sftp::server::Handler for SftpSession {
             .map_err(|_| StatusCode::Failure)?;
         let handle = filename.clone();
         self.files.insert(handle.clone(), file);
+        self.progress.insert(handle.clone(), (name.clone(), total, 0));
+        crate::tools::transfer_progress::start(&name, false, total);
         Ok(Handle { id, handle })
     }
 
@@ -637,6 +727,12 @@ impl russh_sftp::server::Handler for SftpSession {
         file.write_all(&data)
             .await
             .map_err(|_| StatusCode::Failure)?;
+        // Report cumulative progress to the Transfer page.
+        if let Some(p) = self.progress.get_mut(&handle) {
+            let done = p.2.max(offset.saturating_add(data.len() as u64));
+            p.2 = done;
+            crate::tools::transfer_progress::update(&p.0, done, p.1);
+        }
         // Echo the request id back so the client can match acks to its writes.
         // (Reply ids must mirror the request id per the SFTP spec.)
         Ok(Status {
@@ -649,6 +745,9 @@ impl russh_sftp::server::Handler for SftpSession {
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, StatusCode> {
         self.files.remove(&handle);
+        if let Some((name, _, _)) = self.progress.remove(&handle) {
+            crate::tools::transfer_progress::finish(&name);
+        }
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
