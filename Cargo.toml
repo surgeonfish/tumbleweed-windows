@@ -11,7 +11,7 @@ windows-canvas = { git = "https://github.com/microsoft/windows-rs", branch = "ma
 # share the port with any OS mDNS responder.
 socket2 = "0.5"
 # Direct Windows APIs for the folder picker (incoming uploads).
-windows = { git = "https://github.com/microsoft/windows-rs", branch = "master", features = ["Storage_Pickers", "Storage_Search", "Storage_Streams", "winuser", "shobjidl_core", "minwindef", "windef"] }
+windows = { git = "https://github.com/microsoft/windows-rs", branch = "master", features = ["Storage_Pickers", "Storage_Search", "Storage_Streams", "winuser", "shobjidl_core", "minwindef", "windef", "UI_ViewManagement"] }
 # Non-blocking wait on the picker's IAsyncOperation (Async::when).
 windows-future = { git = "https://github.com/microsoft/windows-rs", branch = "master" }
 # QR code generation for SSH pairing (Settings page); rendered to an
