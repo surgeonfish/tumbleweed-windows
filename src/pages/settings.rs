@@ -13,7 +13,7 @@ pub(crate) fn simple_card(
         grid((
             TextBlock::new(icon)
                 .font_family("Segoe Fluent Icons")
-                .font_size(26.0)
+                .font_size(20.0)
                 .vertical_alignment(VerticalAlignment::Center)
                 .grid_column(0),
             grid((
@@ -47,31 +47,6 @@ pub(crate) fn settings_page(
     theme: RequestedTheme,
     set_theme: SetState<RequestedTheme>,
 ) -> Element {
-    // Theme ComboBox: Follow system / Light / Dark.
-    let theme_index = match theme {
-        RequestedTheme::Light => 1,
-        RequestedTheme::Dark => 2,
-        _ => 0,
-    };
-    let theme_card = simple_card(
-        "\u{E790}",
-        "Appearance",
-        "Choose the color theme for this app.",
-        ComboBox::new(["Follow system", "Light", "Dark"])
-            .selected_index(theme_index)
-            .on_selection_changed({
-                let set_theme = set_theme.clone();
-                move |idx: i32| {
-                    let next = match idx {
-                        1 => RequestedTheme::Light,
-                        2 => RequestedTheme::Dark,
-                        _ => RequestedTheme::Default,
-                    };
-                    set_theme.call(next);
-                }
-            }),
-    );
-
     // ---- SSH pairing section ----
     // State: (generation counter, pairing result). The counter is bumped on
     // every generation so the QR image element gets a fresh key and re-renders.
@@ -153,22 +128,59 @@ pub(crate) fn settings_page(
                 None => text_block::caption("Rendering QR code…").into(),
             };
             let meta = format!(
-                "{} · {} · {} · v{}",
+                "{}, {}, {}, v{}",
                 info.name.as_deref().unwrap_or(""),
                 info.device_type.as_deref().unwrap_or(""),
                 info.ip.as_deref().unwrap_or(""),
                 info.version.as_deref().unwrap_or(""),
             );
-            vstack((qr_el, text_block::caption(meta)))
+            grid((
+                // QR code is in column 0, the key pair info is in column 1,
+                // and the meta info is in column 2.
+                border(qr_el)
+                    .corner_radius(16.0)
+                    .background(ThemeRef::ControlFill)
+                    .border_brush(ThemeRef::CardStroke)
+                    .border_thickness(Thickness::uniform(1.0))
+                    .grid_column(0),
+                hstack((
+                    TextBlock::new("\u{E8D7}")
+                        .font_family("Segoe Fluent Icons")
+                        .font_size(16.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(0),
+                    vstack((
+                        body_strong("Key Pair"),
+                        caption("Generated")
+                    ))
+                    .spacing(4.0)
+                    .vertical_alignment(VerticalAlignment::Center),
+                ))
                 .spacing(8.0)
-                .into()
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .grid_column(1),
+                hstack((
+                    TextBlock::new("\u{E928}")
+                        .font_family("Segoe Fluent Icons")
+                        .font_size(16.0)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_column(0),
+                    vstack((
+                        body_strong("Meta"),
+                        caption(meta)
+                    ))
+                    .spacing(4.0)
+                    .vertical_alignment(VerticalAlignment::Center),
+                ))
+                .spacing(8.0)
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .grid_column(2),
+            ))
+            .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+            .column_spacing(40.0)
+            .into()
         }
     };
-
-    let qr_expander: Element = Expander::new(qr_child)
-        .header("Show pairing QR")
-        .expanded(pairing.1.as_ref().is_some_and(|i| i.matrix.is_some()))
-        .into();
 
     // ---- Discovery section ----
     let discovery_title = TextBlock::new("Discovery")
@@ -195,14 +207,48 @@ pub(crate) fn settings_page(
         }),
     );
 
+    // ---- Appearance section ----
+    let appearance_title = TextBlock::new("Appearance")
+        .font_size(20.0)
+        .margin(Thickness {
+            left: 0.0,
+            top: 16.0,
+            right: 0.0,
+            bottom: 4.0,
+        });
+    // Theme ComboBox: Follow system / Light / Dark.
+    let theme_index = match theme {
+        RequestedTheme::Light => 1,
+        RequestedTheme::Dark => 2,
+        _ => 0,
+    };
+    let theme_card = simple_card(
+        "\u{E790}",
+        "Appearance",
+        "Choose the color theme for this app.",
+        ComboBox::new(["Follow system", "Light", "Dark"])
+            .selected_index(theme_index)
+            .on_selection_changed({
+                let set_theme = set_theme.clone();
+                move |idx: i32| {
+                    let next = match idx {
+                        1 => RequestedTheme::Light,
+                        2 => RequestedTheme::Dark,
+                        _ => RequestedTheme::Default,
+                    };
+                    set_theme.call(next);
+                }
+            }),
+    );
+
     // The cards live inside the scroll view; the page title sits above them.
     let card_stack: Element = vstack((
-        theme_card,
         ssh_title,
         ssh_card,
-        qr_expander,
         discovery_title,
         mdns_card,
+        appearance_title,
+        theme_card,
     ))
     .spacing(8.0)
     .into();
@@ -215,6 +261,7 @@ pub(crate) fn settings_page(
             right: 0.0,
             bottom: 12.0,
         }),
+        qr_child,
         scroll,
     ))
     .margin(Thickness {

@@ -41,11 +41,12 @@ fn accent_color() -> ColorF {
     }
 }
 
-/// Draw `matrix` (row-major, `size` x `size`) into `ctx`: a white background
-/// with accent-colored modules. Call from a `canvas`/`canvas_invalidated` draw
-/// callback.
+/// Draw `matrix` (row-major, `size` x `size`) into `ctx`: a transparent
+/// background with accent-colored modules, so the QR floats on whatever is
+/// behind the canvas instead of a solid white box. Call from a
+/// `canvas`/`canvas_invalidated` draw callback.
 pub(crate) fn draw_qr(ctx: &DrawContext, matrix: &[bool], size: usize) -> Result<()> {
-    ctx.clear(ColorF::WHITE);
+    ctx.clear(ColorF::TRANSPARENT);
     let brush = ctx.create_solid_brush(accent_color())?;
     for y in 0..size {
         for x in 0..size {
