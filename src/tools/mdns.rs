@@ -568,8 +568,15 @@ fn peers() -> &'static std::sync::Mutex<Vec<(DiscoveredDevice, std::time::Instan
 /// device type/version from the advertisement's TXT record so peers are
 /// labelled without a separate probe.
 fn record_peer_packet(pkt: &[u8]) {
-    let (instances, ips, txt) = parse_discovery_response(pkt);
+    let (instances, ips, txt, goodbye) = parse_discovery_response(pkt);
     if ips.is_empty() {
+        return;
+    }
+    // Only treat packets that actually advertise the Tumbleweed service as
+    // peers. Any device on the LAN can send mDNS A records (printers, TVs,
+    // other OS mDNS responders, etc.), but without a `_tumbleweed._tcp` PTR
+    // it isn't a Tumbleweed device and must not show up in the device list.
+    if !instances.iter().any(|i| i.contains("_tumbleweed._tcp")) {
         return;
     }
     let own_ips = local_ipv4_addrs();
@@ -577,6 +584,12 @@ fn record_peer_packet(pkt: &[u8]) {
     let kind = txt.get("type").cloned().unwrap_or_default();
     let version = txt.get("version").cloned().unwrap_or_default();
     if let Ok(mut guard) = peers().lock() {
+        // mDNS goodbye (TTL=0): the peer announced it's going away — remove it
+        // from the list right away instead of waiting out the 15 s TTL.
+        if goodbye {
+            guard.retain(|e| !ips.iter().any(|ip| &e.0.ip == ip));
+            return;
+        }
         for (i, ip) in ips.iter().enumerate() {
             if let IpAddr::V4(v4) = ip {
                 if own_ips.contains(v4) {
@@ -815,8 +828,8 @@ fn log_snapshot_change(snapshot: &[DiscoveredDevice]) {
 
 /// Parse a discovery response, collecting PTR instance names, A-record IPs and
 /// the TXT key-values (type/version) advertised for the peer.
-fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::collections::HashMap<String, String>) {
-    let empty = || (Vec::new(), Vec::new(), std::collections::HashMap::new());
+fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::collections::HashMap<String, String>, bool) {
+    let empty = || (Vec::new(), Vec::new(), std::collections::HashMap::new(), false);
     if pkt.len() < 12 {
         return empty();
     }
@@ -839,6 +852,7 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::colle
     let mut instances = Vec::new();
     let mut ips = Vec::new();
     let mut txt = std::collections::HashMap::new();
+    let mut goodbye = false;
 
     for _ in 0..ancount {
         let Some((_owner, consumed)) = read_name(pkt, pos) else {
@@ -849,6 +863,11 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::colle
             break;
         }
         let rtype = u16::from_be_bytes([pkt[pos], pkt[pos + 1]]);
+        // TTL=0 marks an mDNS goodbye (the peer is going away).
+        let ttl = u32::from_be_bytes([pkt[pos + 4], pkt[pos + 5], pkt[pos + 6], pkt[pos + 7]]);
+        if ttl == 0 {
+            goodbye = true;
+        }
         let rdlen = u16::from_be_bytes([pkt[pos + 8], pkt[pos + 9]]) as usize;
         pos += 10;
         if pos + rdlen > pkt.len() {
@@ -888,5 +907,5 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::colle
         pos += rdlen;
     }
 
-    (instances, ips, txt)
+    (instances, ips, txt, goodbye)
 }
