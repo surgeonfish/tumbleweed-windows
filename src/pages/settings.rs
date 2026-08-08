@@ -114,15 +114,22 @@ pub(crate) fn settings_page(
                     let m = m.clone();
                     let size = info.size;
                     let size_dips = crate::tools::qr_surface::qr_size(size);
-                    // `animated_canvas` repaints every frame on the UI thread, so
-                    // the QR picks up a system accent-color change immediately
-                    // (the draw closure reads the accent each frame) without the
-                    // need for a cross-thread event subscription. It still paints
-                    // on mount, so the QR never comes up blank after switching
-                    // tabs. Keyed by generation so a regenerated key pair gets a
-                    // fresh canvas.
-                    animated_canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
-                        .with_key(format!("qr-{generation}"))
+                    // `canvas` is demand-driven: it only paints on mount,
+                    // resize, or a key change, so an idle QR does no GPU/CPU
+                    // work (an `animated_canvas` repaints every frame and was
+                    // hammering the accent-color WinRT query). It paints on
+                    // mount, so it never comes up blank after switching tabs.
+                    // Keyed by generation (regeneration) and the color scheme
+                    // (theme change) so either one remounts and repaints with
+                    // the current accent/ControlFill colors.
+                    canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
+                        .with_key(format!(
+                            "qr-{generation}-{}",
+                            matches!(
+                                current_color_scheme(),
+                                windows_reactor::ColorScheme::Dark
+                            )
+                        ))
                         .width(size_dips)
                         .height(size_dips)
                         .into()
