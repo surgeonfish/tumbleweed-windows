@@ -197,10 +197,42 @@ pub(crate) fn settings_page(
         .expanded(pairing.1.as_ref().is_some_and(|i| i.matrix.is_some()))
         .into();
 
+    // ---- Discovery section ----
+    let discovery_title = TextBlock::new("Discovery")
+        .font_size(20.0)
+        .margin(Thickness {
+            left: 0.0,
+            top: 16.0,
+            right: 0.0,
+            bottom: 4.0,
+        });
+    // Live toggle for mDNS advertising + discovery, persisted in settings.
+    let (mdns_on, set_mdns_on) = cx.use_state(crate::tools::mdns::mdns_enabled());
+    let mdns_card = simple_card(
+        "\u{E701}", // Wifi
+        "mDNS discovery",
+        "Advertise this PC and find nearby Tumbleweed devices on your network.",
+        ToggleSwitch::new(mdns_on).on_toggled({
+            let set_mdns_on = set_mdns_on.clone();
+            move |on: bool| {
+                crate::tools::mdns::set_mdns_enabled(on);
+                crate::tools::settings_store::save_mdns_enabled(on);
+                set_mdns_on.call(on);
+            }
+        }),
+    );
+
     // The cards live inside the scroll view; the page title sits above them.
-    let card_stack: Element = vstack((theme_card, ssh_title, ssh_card, qr_expander))
-        .spacing(8.0)
-        .into();
+    let card_stack: Element = vstack((
+        theme_card,
+        ssh_title,
+        ssh_card,
+        qr_expander,
+        discovery_title,
+        mdns_card,
+    ))
+    .spacing(8.0)
+    .into();
     let scroll: Element = scroll_view(card_stack).into();
 
     vstack((

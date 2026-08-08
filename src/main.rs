@@ -355,6 +355,9 @@ fn main() -> Result<()> {
 
     bootstrap()?;
 
+    // Honour the persisted mDNS toggle from the Settings page (default on).
+    tools::mdns::set_mdns_enabled(tools::settings_store::load_mdns_enabled());
+
     // The app is the server: advertise "tumbleweed.local" over mDNS (SSH port
     // 2222, type "pc", this app's version in the TXT record) on a background
     // thread. SSH handles both directions — phones push files over SFTP here,

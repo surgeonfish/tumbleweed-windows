@@ -60,3 +60,13 @@ pub(crate) fn load_theme() -> RequestedTheme {
         _ => RequestedTheme::Default,
     }
 }
+
+/// Persist the mDNS discovery toggle ("1" on / "0" off).
+pub(crate) fn save_mdns_enabled(enabled: bool) {
+    set("mdns_enabled", if enabled { "1" } else { "0" });
+}
+
+/// Load the mDNS toggle, defaulting to enabled.
+pub(crate) fn load_mdns_enabled() -> bool {
+    get("mdns_enabled").as_deref() != Some("0")
+}

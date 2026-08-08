@@ -6,7 +6,28 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+/// Whether mDNS advertising/discovery is enabled. Driven by the Settings
+/// toggle and loaded from the settings file at startup; defaults to on.
+static MDNS_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Current mDNS enabled state.
+pub(crate) fn mdns_enabled() -> bool {
+    MDNS_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Set the mDNS enabled state. When disabling, clears the discovered-peer
+/// cache so the device list empties immediately.
+pub(crate) fn set_mdns_enabled(enabled: bool) {
+    MDNS_ENABLED.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        if let Ok(mut guard) = peers().lock() {
+            guard.clear();
+        }
+    }
+}
 
 /// mDNS IPv4 link-local multicast group.
 const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -321,12 +342,14 @@ fn txt_record(device_type: &str, version: &str) -> Vec<u8> {
 }
 
 /// Build the PTR + SRV + TXT + A answers that advertise this device.
+/// `ttl` is the record TTL: 120 for normal announcements, 0 for a goodbye.
 fn service_answers(
     name: &str,
     service_port: u16,
     device_type: &str,
     version: &str,
     addrs: &[Ipv4Addr],
+    ttl: u32,
 ) -> Vec<Answer> {
     let instance = service_instance(name);
     let service = service_type(name);
@@ -337,7 +360,7 @@ fn service_answers(
         name: service,
         rtype: 12, // PTR
         class: 1,
-        ttl: 120,
+        ttl,
         rdata: encode_name(&instance),
     });
     // SRV: tumbleweed._tcp.local -> priority/weight/port + tumbleweed.local
@@ -350,7 +373,7 @@ fn service_answers(
         name: instance.clone(),
         rtype: 33, // SRV
         class: 1,
-        ttl: 120,
+        ttl,
         rdata: srv,
     });
     // TXT: type + version + txtvers.
@@ -358,7 +381,7 @@ fn service_answers(
         name: instance.clone(),
         rtype: 16, // TXT
         class: 1,
-        ttl: 120,
+        ttl,
         rdata: txt_record(device_type, version),
     });
     // A: tumbleweed.local -> ip (unique, cache-flush)
@@ -367,7 +390,7 @@ fn service_answers(
             name: name.to_string(),
             rtype: 1,
             class: 0x8001, // IN | cache-flush
-            ttl: 120,
+            ttl,
             rdata: ip.octets().to_vec(),
         });
     }
@@ -381,8 +404,9 @@ fn build_announcement(
     device_type: &str,
     version: &str,
     addrs: &[Ipv4Addr],
+    ttl: u32,
 ) -> Vec<u8> {
-    let answers = service_answers(name, service_port, device_type, version, addrs);
+    let answers = service_answers(name, service_port, device_type, version, addrs, ttl);
     build_response(0, 0x8400, None, &answers)
 }
 
@@ -436,7 +460,7 @@ fn response_for_query(
     } else if qname.eq_ignore_ascii_case(&service) && (qtype == 12 || qtype == 255) {
         // Service PTR / ANY query -> bundle everything so the client learns
         // the instance, port, and address from one response.
-        answers = service_answers(name, service_port, device_type, version, addrs);
+        answers = service_answers(name, service_port, device_type, version, addrs, 120);
     } else if qname.eq_ignore_ascii_case(&instance) && (qtype == 33 || qtype == 255) {
         // Service instance SRV / ANY query.
         let mut srv = Vec::new();
@@ -666,8 +690,14 @@ pub fn advertise(
         }
     };
 
-    let announce = build_announcement(name, service_port, device_type, version, &addrs);
-    socket.send_to(&announce, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT))?;
+    let announce = build_announcement(name, service_port, device_type, version, &addrs, 120);
+    // TTL=0 goodbye, sent when mDNS is turned off so peers drop us from their
+    // caches immediately instead of waiting out the 120 s TTL.
+    let goodbye = build_announcement(name, service_port, device_type, version, &addrs, 0);
+    let group = SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT);
+    if mdns_enabled() {
+        socket.send_to(&announce, group)?;
+    }
     log_msg(&format!(
         "[mdns] advertising {name} at {addrs:?} (service {} type={device_type} v{version}) standard_5353={standard}",
         service_type(name)
@@ -676,8 +706,28 @@ pub fn advertise(
     let mut buf = [0u8; 4096];
     let mut last_announce = std::time::Instant::now();
     let probe = build_query(&service_type(name), 12);
-    let group = SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT);
+    let mut was_enabled = mdns_enabled();
     loop {
+        // Respect the Settings toggle: when disabled, announce a TTL=0 goodbye
+        // once (so peers drop us immediately), then idle silently without
+        // answering queries or recording peers.
+        if !mdns_enabled() {
+            if was_enabled {
+                for _ in 0..2 {
+                    let _ = socket.send_to(&goodbye, group);
+                }
+                log_msg("[mdns] disabled");
+                was_enabled = false;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+        if !was_enabled {
+            log_msg("[mdns] enabled");
+            was_enabled = true;
+            // Re-announce promptly so peers find us again right away.
+            last_announce = std::time::Instant::now() - Duration::from_secs(3);
+        }
         if standard {
             let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
             match socket.recv_from(&mut buf) {
@@ -789,6 +839,11 @@ fn display_name(instance: &str) -> String {
 /// service type and collecting each responder's advertised host IP. Blocks
 /// for up to `timeout` — call it on a background thread.
 pub fn discover_devices(timeout: Duration) -> io::Result<Vec<DiscoveredDevice>> {
+    // When mDNS is disabled (Settings toggle), don't even send a query — the
+    // device list should be empty.
+    if !mdns_enabled() {
+        return Ok(Vec::new());
+    }
     // Send a PTR query to prompt responders, then return the snapshot the
     // advertiser thread maintains from its single 5353 socket (which sees all
     // multicast — a second 5353 socket in the same process would be starved by
