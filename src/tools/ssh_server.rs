@@ -108,6 +108,14 @@ fn authorized_keys() -> Vec<PublicKey> {
         .collect()
 }
 
+/// Whether `key` matches a phone public key this PC has registered in its
+/// `authorized_keys`. Used to verify a phone's SSH *host* key before pushing a
+/// file to it (a paired phone's host key is the same RSA key it registered
+/// during pairing), which prevents man-in-the-middle attacks.
+pub(crate) fn is_known_phone_key(key: &PublicKey) -> bool {
+    authorized_keys().iter().any(|k| k == key)
+}
+
 /// Append `key` (an OpenSSH public-key line) to `authorized_keys`.
 pub(crate) fn add_authorized_key(line: &str) {
     let line = line.trim();

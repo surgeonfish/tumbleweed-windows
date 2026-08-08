@@ -252,7 +252,7 @@ fn read_name(pkt: &[u8], start: usize) -> Option<(String, usize)> {
 
 // ---------------------------------------------------------------------------
 // mDNS advertiser — the app advertises itself as a `.local` hostname so other
-// devices on the LAN can reach it (e.g. its HTTP file server).
+// devices on the LAN can reach it (e.g. its SSH file server).
 // ---------------------------------------------------------------------------
 
 /// One resource record for building mDNS responses.
@@ -300,8 +300,34 @@ fn service_instance(host: &str) -> String {
     format!("{}._tcp.local", host.trim_end_matches(".local"))
 }
 
+/// Encode one TXT key-value pair as a length-prefixed entry, e.g.
+/// `type=pc` -> `\x07type=pc`.
+fn encode_txt(key_value: &str) -> Vec<u8> {
+    let bytes = key_value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() + 1);
+    out.push(bytes.len().min(255) as u8);
+    out.extend_from_slice(&bytes[..bytes.len().min(255)]);
+    out
+}
+
+/// Build the TXT record advertising `device_type` and `version` (Android's
+/// NsdManager refuses to resolve a service without a TXT record, so we always
+/// advertise one — `txtvers` is the conventional first key).
+fn txt_record(device_type: &str, version: &str) -> Vec<u8> {
+    let mut txt = b"\x08txtvers=1".to_vec();
+    txt.extend_from_slice(&encode_txt(&format!("type={device_type}")));
+    txt.extend_from_slice(&encode_txt(&format!("version={version}")));
+    txt
+}
+
 /// Build the PTR + SRV + TXT + A answers that advertise this device.
-fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Answer> {
+fn service_answers(
+    name: &str,
+    service_port: u16,
+    device_type: &str,
+    version: &str,
+    addrs: &[Ipv4Addr],
+) -> Vec<Answer> {
     let instance = service_instance(name);
     let service = service_type(name);
     let mut answers = Vec::new();
@@ -327,14 +353,13 @@ fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Ans
         ttl: 120,
         rdata: srv,
     });
-    // TXT: Android NsdManager refuses to resolve a service without a TXT
-    // record, so always advertise one (txtvers is the conventional first key).
+    // TXT: type + version + txtvers.
     answers.push(Answer {
         name: instance.clone(),
         rtype: 16, // TXT
         class: 1,
         ttl: 120,
-        rdata: b"\x08txtvers=1".to_vec(),
+        rdata: txt_record(device_type, version),
     });
     // A: tumbleweed.local -> ip (unique, cache-flush)
     for ip in addrs {
@@ -350,8 +375,14 @@ fn service_answers(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<Ans
 }
 
 /// Unsolicited announcement: service PTR + SRV + host A record(s).
-fn build_announcement(name: &str, service_port: u16, addrs: &[Ipv4Addr]) -> Vec<u8> {
-    let answers = service_answers(name, service_port, addrs);
+fn build_announcement(
+    name: &str,
+    service_port: u16,
+    device_type: &str,
+    version: &str,
+    addrs: &[Ipv4Addr],
+) -> Vec<u8> {
+    let answers = service_answers(name, service_port, device_type, version, addrs);
     build_response(0, 0x8400, None, &answers)
 }
 
@@ -362,6 +393,8 @@ fn response_for_query(
     pkt: &[u8],
     name: &str,
     service_port: u16,
+    device_type: &str,
+    version: &str,
     addrs: &[Ipv4Addr],
     src: SocketAddr,
 ) -> Option<(Vec<u8>, SocketAddr)> {
@@ -403,7 +436,7 @@ fn response_for_query(
     } else if qname.eq_ignore_ascii_case(&service) && (qtype == 12 || qtype == 255) {
         // Service PTR / ANY query -> bundle everything so the client learns
         // the instance, port, and address from one response.
-        answers = service_answers(name, service_port, addrs);
+        answers = service_answers(name, service_port, device_type, version, addrs);
     } else if qname.eq_ignore_ascii_case(&instance) && (qtype == 33 || qtype == 255) {
         // Service instance SRV / ANY query.
         let mut srv = Vec::new();
@@ -424,7 +457,7 @@ fn response_for_query(
             rtype: 16,
             class: 1,
             ttl: 120,
-            rdata: b"\x08txtvers=1".to_vec(),
+            rdata: txt_record(device_type, version),
         });
     }
 
@@ -531,14 +564,18 @@ fn peers() -> &'static std::sync::Mutex<Vec<(DiscoveredDevice, std::time::Instan
 }
 
 /// Record any peer devices advertised in `pkt` (PTR instance + A records) into
-/// the shared registry, pruning entries that have gone stale.
+/// the shared registry, pruning entries that have gone stale. Also captures the
+/// device type/version from the advertisement's TXT record so peers are
+/// labelled without a separate probe.
 fn record_peer_packet(pkt: &[u8]) {
-    let (instances, ips) = parse_discovery_response(pkt);
+    let (instances, ips, txt) = parse_discovery_response(pkt);
     if ips.is_empty() {
         return;
     }
     let own_ips = local_ipv4_addrs();
     let now = std::time::Instant::now();
+    let kind = txt.get("type").cloned().unwrap_or_default();
+    let version = txt.get("version").cloned().unwrap_or_default();
     if let Ok(mut guard) = peers().lock() {
         for (i, ip) in ips.iter().enumerate() {
             if let IpAddr::V4(v4) = ip {
@@ -555,14 +592,16 @@ fn record_peer_packet(pkt: &[u8]) {
             match guard.iter_mut().find(|e| e.0.ip == *ip) {
                 Some(e) => {
                     e.0.name = name;
+                    e.0.kind = kind.clone();
+                    e.0.version = version.clone();
                     e.1 = now;
                 }
                 None => guard.push((
                     DiscoveredDevice {
                         name,
                         ip: *ip,
-                        kind: String::new(),
-                        version: String::new(),
+                        kind: kind.clone(),
+                        version: version.clone(),
                     },
                     now,
                 )),
@@ -576,14 +615,21 @@ fn record_peer_packet(pkt: &[u8]) {
 /// so other machines on the LAN can reach this app. Also advertises the DNS-SD
 /// service (`_tumbleweed._tcp.local`) so other tumbleweed apps can discover it.
 ///
-/// `service_port` is the TCP port of the HTTP file server (used in the SRV
-/// record). Sends an initial announcement, re-announces periodically, and
-/// responds to incoming queries. Blocking — run on its own thread.
+/// `service_port` is the TCP port of the SSH server (used in the SRV record);
+/// `device_type` ("pc" / "phone") and `version` are carried in the TXT record
+/// so peers can label and version-check us without an extra probe. Sends an
+/// initial announcement, re-announces periodically, and responds to incoming
+/// queries. Blocking — run on its own thread.
 ///
 /// Announcements and query responses are sent from the standard mDNS port
 /// (5353) when it can be bound; if that port is taken, an ephemeral socket is
 /// used for announcement-only mode so devices still learn of us.
-pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
+pub fn advertise(
+    name: &str,
+    service_port: u16,
+    device_type: &str,
+    version: &str,
+) -> io::Result<()> {
     let name = name.trim_end_matches('.');
     let addrs = local_ipv4_addrs();
     if addrs.is_empty() {
@@ -607,10 +653,10 @@ pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
         }
     };
 
-    let announce = build_announcement(name, service_port, &addrs);
+    let announce = build_announcement(name, service_port, device_type, version, &addrs);
     socket.send_to(&announce, SocketAddr::new(IpAddr::V4(MDNS_GROUP), MDNS_PORT))?;
     log_msg(&format!(
-        "[mdns] advertising {name} at {addrs:?} (service {}) standard_5353={standard}",
+        "[mdns] advertising {name} at {addrs:?} (service {} type={device_type} v{version}) standard_5353={standard}",
         service_type(name)
     ));
 
@@ -628,7 +674,7 @@ pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
                     // without a second (starved) 5353 socket.
                     record_peer_packet(&buf[..len]);
                     if let Some((resp, dest)) =
-                        response_for_query(&buf[..len], name, service_port, &addrs, src)
+                        response_for_query(&buf[..len], name, service_port, device_type, version, &addrs, src)
                     {
                         let _ = socket.send_to(&resp, dest);
                     }
@@ -661,10 +707,10 @@ pub fn advertise(name: &str, service_port: u16) -> io::Result<()> {
 pub struct DiscoveredDevice {
     pub name: String,
     pub ip: IpAddr,
-    /// Device type reported over HTTP (`/info`): "pc", "phone" or "" while
+    /// Device type from the peer's mDNS TXT record: "pc" or "phone"; "" while
     /// unknown/pending.
     pub kind: String,
-    /// App version reported over HTTP (`/info`), "" while unknown/pending.
+    /// App version from the peer's mDNS TXT record, "" while unknown/pending.
     pub version: String,
 }
 
@@ -733,7 +779,8 @@ pub fn discover_devices(timeout: Duration) -> io::Result<Vec<DiscoveredDevice>> 
     // Send a PTR query to prompt responders, then return the snapshot the
     // advertiser thread maintains from its single 5353 socket (which sees all
     // multicast — a second 5353 socket in the same process would be starved by
-    // Windows). The snapshot is updated continuously by `record_peer_packet`.
+    // Windows). The snapshot is updated continuously by `record_peer_packet`,
+    // which also captures each peer's type/version from its TXT record.
     let _ = timeout;
     let service = service_type("tumbleweed.local");
     let query = build_query(&service, 12);
@@ -742,28 +789,10 @@ pub fn discover_devices(timeout: Duration) -> io::Result<Vec<DiscoveredDevice>> 
     }
     // Give responders a moment to answer (the advertiser thread records them).
     std::thread::sleep(Duration::from_millis(250));
-    let mut snapshot: Vec<DiscoveredDevice> = peers()
+    let snapshot: Vec<DiscoveredDevice> = peers()
         .lock()
         .map(|g| g.iter().map(|e| e.0.clone()).collect())
         .unwrap_or_default();
-    // Ask each newly seen peer what kind of device it is over HTTP (`/info`),
-    // caching the answer in the shared registry so we only fetch each peer
-    // once (not every poll).
-    for d in snapshot.iter_mut() {
-        if !d.kind.is_empty() {
-            continue;
-        }
-        if let Some(info) = super::client::fetch_info(d.ip, super::server::HTTP_PORT) {
-            d.kind = info.kind;
-            d.version = info.version;
-            if let Ok(mut guard) = peers().lock() {
-                if let Some(e) = guard.iter_mut().find(|e| e.0.ip == d.ip) {
-                    e.0.kind = d.kind.clone();
-                    e.0.version = d.version.clone();
-                }
-            }
-        }
-    }
     log_snapshot_change(&snapshot);
     Ok(snapshot)
 }
@@ -784,9 +813,10 @@ fn log_snapshot_change(snapshot: &[DiscoveredDevice]) {
     }
 }
 
-/// Parse a discovery response, collecting PTR instance names and A-record IPs.
-fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>) {
-    let empty = || (Vec::new(), Vec::new());
+/// Parse a discovery response, collecting PTR instance names, A-record IPs and
+/// the TXT key-values (type/version) advertised for the peer.
+fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::collections::HashMap<String, String>) {
+    let empty = || (Vec::new(), Vec::new(), std::collections::HashMap::new());
     if pkt.len() < 12 {
         return empty();
     }
@@ -808,6 +838,7 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>) {
 
     let mut instances = Vec::new();
     let mut ips = Vec::new();
+    let mut txt = std::collections::HashMap::new();
 
     for _ in 0..ancount {
         let Some((_owner, consumed)) = read_name(pkt, pos) else {
@@ -836,10 +867,26 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>) {
                     rdata[0], rdata[1], rdata[2], rdata[3],
                 )));
             }
+            16 => {
+                // TXT rdata is a sequence of length-prefixed key=value entries.
+                let mut p = 0usize;
+                while p < rdata.len() {
+                    let n = rdata[p] as usize;
+                    p += 1;
+                    if n == 0 || p + n > rdata.len() {
+                        break;
+                    }
+                    let entry = String::from_utf8_lossy(&rdata[p..p + n]).to_string();
+                    p += n;
+                    if let Some((k, v)) = entry.split_once('=') {
+                        txt.insert(k.trim().to_string(), v.trim().to_string());
+                    }
+                }
+            }
             _ => {}
         }
         pos += rdlen;
     }
 
-    (instances, ips)
+    (instances, ips, txt)
 }

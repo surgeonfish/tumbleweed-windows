@@ -36,14 +36,13 @@ fn app(cx: &mut RenderCx) -> Element {
     let default = cx.use_memo((), || default_folder());
     let (current_path, set_current_path) = cx.use_state(default.clone());
 
-    // Persist the folder and keep the HTTP + SSH (SCP) servers pointing at the
-    // same folder the user is currently exploring.
+    // Persist the folder and keep the SSH (SFTP) server pointing at the same
+    // folder the user is currently exploring.
     cx.use_effect((current_path.clone(),), {
         let current_path = current_path.clone();
         let set_search_target = set_search_target.clone();
         move || {
             save_last_folder(&current_path);
-            tools::server::set_root(current_path.clone());
             tools::ssh_server::set_share_root(current_path.clone());
             // A folder change invalidates any previously searched row index.
             set_search_target.call(None);
@@ -87,7 +86,7 @@ fn app(cx: &mut RenderCx) -> Element {
         move || save_history(&transfer_history)
     });
 
-    // Incoming upload confirmation bridge (HTTP server thread -> UI thread).
+    // Incoming upload confirmation bridge (SSH server thread -> UI thread).
     // Multiple concurrent transfers are queued; the UI confirms them one at a
     // time from the front of the queue.
     let (incoming, _set_incoming) = cx.use_async_state(Vec::<IncomingUpload>::new());
@@ -356,21 +355,23 @@ fn main() -> Result<()> {
 
     bootstrap()?;
 
-    // The app is the server: advertise "tumbleweed.local" over mDNS and serve
-    // the Explorer folder over HTTP, both on background threads.
+    // The app is the server: advertise "tumbleweed.local" over mDNS (SSH port
+    // 2222, type "pc", this app's version in the TXT record) on a background
+    // thread. SSH handles both directions — phones push files over SFTP here,
+    // and the Explorer page pushes files to phones via `tools::ssh_send`.
     std::thread::spawn(|| {
         let host = tools::mdns::device_hostname();
-        if let Err(e) = tools::mdns::advertise(&host, tools::server::HTTP_PORT) {
+        if let Err(e) = tools::mdns::advertise(
+            &host,
+            tools::ssh_server::SSH_PORT,
+            "pc",
+            env!("CARGO_PKG_VERSION"),
+        ) {
             // No console in GUI-subsystem builds, so log to a file instead.
             tools::mdns::log_msg(&format!("[mdns] advertise error: {e}"));
         }
     });
-    std::thread::spawn(|| {
-        if let Err(e) = tools::server::serve(tools::server::HTTP_PORT) {
-            println!("[server] serve error: {e}");
-        }
-    });
-    // Embedded SSH server for SCP uploads from paired phones.
+    // Embedded SSH server for SFTP uploads from paired phones.
     tools::ssh_server::start();
 
     App::new()

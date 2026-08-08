@@ -228,16 +228,16 @@ pub(crate) fn explorer_page(
                     // Do the network transfer off the UI thread; report back via
                     // the async state so Transfer history updates on success.
                     std::thread::spawn(move || {
-                        match crate::tools::client::send_file(
+                        match crate::tools::ssh_send::send_file(
                             ip,
-                            crate::tools::server::HTTP_PORT,
+                            crate::tools::ssh_server::SSH_PORT,
                             &path,
                         ) {
                             Ok(()) => {
                                 set_upload_result.call(Some(UploadOutcome::Success(name)))
                             }
                             Err(e) => {
-                                eprintln!("[client] upload to {ip} failed: {e}");
+                                eprintln!("[ssh-send] upload to {ip} failed: {e}");
                                 set_upload_result.call(Some(UploadOutcome::Error(format!(
                                     "Could not send {name} to {ip}: {e}"
                                 ))));

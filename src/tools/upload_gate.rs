@@ -1,4 +1,4 @@
-//! Bridge between the HTTP server thread and the WinUI UI thread for
+//! Bridge between the SSH server thread and the WinUI UI thread for
 //! confirming incoming uploads. Incoming uploads are queued so that several
 //! concurrent transfers (e.g. the phone uploading to this PC while another
 //! device does too) are each confirmed in turn instead of one clobbering the
