@@ -147,6 +147,46 @@ pub(crate) fn add_authorized_key(line: &str) {
     }
 }
 
+/// File recording the LAN IPs of phones that have paired (registered a key).
+fn paired_ips_path() -> PathBuf {
+    crate::tools::ssh_pair::app_folder().join("paired_ips")
+}
+
+/// Record a newly paired phone's LAN IP (deduped, one per line).
+fn record_paired_ip(ip: &str) {
+    if ip.is_empty() {
+        return;
+    }
+    let path = paired_ips_path();
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == ip) {
+        return;
+    }
+    use std::io::Write;
+    let _ = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            writeln!(f, "{ip}")?;
+            f.flush()
+        });
+}
+
+/// The LAN IPs of phones that have paired with this PC (registered a key).
+/// The Devices page splits discovered peers into paired vs new using these.
+pub(crate) fn paired_device_ips() -> Vec<String> {
+    let path = paired_ips_path();
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
 // ---- the server ----
 
 /// Start the SSH server on a background thread. Non-blocking.
@@ -250,7 +290,7 @@ async fn run_server() -> anyhow::Result<bool> {
                 }
             }
             res = listener.accept() => {
-                let (socket, _addr) = match res {
+                let (socket, addr) = match res {
                     Ok(x) => x,
                     Err(e) => {
                         crate::tools::mdns::log_msg(&format!("[ssh] accept: {e}"));
@@ -268,6 +308,9 @@ async fn run_server() -> anyhow::Result<bool> {
                     clients: Arc::new(Mutex::new(HashMap::new())),
                     pairing_key: None,
                     pending_sizes: Arc::new(Mutex::new(HashMap::new())),
+                    // Remember the connecting peer so a successful `add-key`
+                    // pairing records which phone paired with this PC.
+                    peer_ip: Some(addr.ip().to_string()),
                 };
                 let config = match build_config() {
                     Ok(c) => c,
@@ -300,6 +343,9 @@ struct SshHandler {
     /// Filename -> announced size from `tumbleweed transfer` exec messages, so
     /// a subsequent SFTP open can show a determinate progress bar.
     pending_sizes: Arc<Mutex<HashMap<String, u64>>>,
+    /// The connecting phone's LAN IP (from the accepted socket), recorded when
+    /// it pairs so the Devices page can split paired vs new devices.
+    peer_ip: Option<String>,
 }
 
 impl SshHandler {
@@ -383,6 +429,12 @@ impl russh::server::Handler for SshHandler {
             match self.pairing_key.take() {
                 Some(k) => {
                     add_authorized_key(&k.public_key_base64());
+                    // Record the phone's IP so the Devices page can list it
+                    // under "Paired devices" instead of "New devices".
+                    if let Some(ip) = &self.peer_ip {
+                        record_paired_ip(ip);
+                        crate::tools::mdns::log_msg(&format!("[ssh] paired phone from {ip}"));
+                    }
                     let _ = session.data(channel, CryptoVec::from(b"registered\n".to_vec()));
                 }
                 None => {

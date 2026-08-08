@@ -54,9 +54,20 @@ fn device_card(name: &str, kind: &str, version: &str, ips: &[String]) -> Element
     .into()
 }
 
-/// The Devices page: this device in one section, other tumbleweed devices in
-/// another. Renders inside the app's shared [`RenderCx`]; the discovered list
-/// is owned by `app` and passed in.
+/// A card for a discovered peer, with the kind/version from its mDNS TXT
+/// record (a blank version is shown as "unknown").
+fn peer_card(d: &DiscoveredDevice) -> Element {
+    let version = if d.version.is_empty() {
+        "unknown"
+    } else {
+        &d.version
+    };
+    device_card(&d.name, &d.kind, version, &[d.ip.to_string()])
+}
+
+/// The Devices page: this device, then the devices already paired with this
+/// PC, then the new devices discovered on the LAN. Renders inside the app's
+/// shared [`RenderCx`]; the discovered list is owned by `app` and passed in.
 pub(crate) fn devices_page(
     _cx: &mut RenderCx,
     devices: &[DiscoveredDevice],
@@ -67,33 +78,39 @@ pub(crate) fn devices_page(
     // This device card — always shown as a PC (it's a Windows app).
     let this_card = device_card(this_name, THIS_DEVICE_KIND, this_version, this_ips);
 
-    // Other device cards (or an empty hint).
-    let mut other_cards: Vec<Element> = Vec::new();
-    if devices.is_empty() {
-        other_cards.push(
-            TextBlock::new("No other devices found on the LAN.")
+    // Split the discovered peers into already-paired (registered a key during
+    // pairing) and new ones. A device that already paired is not "new".
+    let paired_ips = crate::tools::ssh_server::paired_device_ips();
+    let (paired, new): (Vec<&DiscoveredDevice>, Vec<&DiscoveredDevice>) = devices
+        .iter()
+        .partition(|d| paired_ips.iter().any(|ip| ip == &d.ip.to_string()));
+
+    // Section headers live above each group; all cards go into one vstack.
+    let mut children: Vec<Element> = Vec::new();
+    children.push(body_strong("This device").into());
+    children.push(this_card);
+
+    if !paired.is_empty() {
+        children.push(body_strong("Paired devices").into());
+        for d in paired {
+            children.push(peer_card(d));
+        }
+    }
+
+    children.push(body_strong("New devices").into());
+    if new.is_empty() {
+        children.push(
+            TextBlock::new("No new devices found on the LAN.")
                 .font_size(13.0)
                 .foreground(Color { a: 255, r: 150, g: 150, b: 150 })
                 .padding(Thickness::uniform(8.0))
                 .into(),
         );
     } else {
-        for d in devices {
-            let version = if d.version.is_empty() {
-                "unknown"
-            } else {
-                &d.version
-            };
-            other_cards.push(device_card(&d.name, &d.kind, version, &[d.ip.to_string()]));
+        for d in new {
+            children.push(peer_card(d));
         }
     }
-
-    // Section headers live above each group; all cards go into one vstack.
-    let mut children: Vec<Element> = Vec::new();
-    children.push(body_strong("This device").into());
-    children.push(this_card);
-    children.push(body_strong("Other devices").into());
-    children.extend(other_cards);
 
     let stack: Element = vstack(children).spacing(8.0).into();
     let scroll: Element = scroll_view(stack).into();
