@@ -17,8 +17,8 @@ use windows_reactor::{DrawContext, Result};
 
 /// QR quiet zone, in modules.
 const QUIET: f32 = 4.0;
-/// DIPs per module — 8 keeps the QR crisp and scannable.
-const SCALE: f32 = 8.0;
+/// DIPs per module — 2 keeps the QR compact but still crisp and scannable.
+const SCALE: f32 = 2.0;
 
 /// Draw `matrix` (row-major, `size` x `size`) into `ctx`: a white background
 /// with black modules. Call from a `canvas`/`canvas_invalidated` draw callback.
