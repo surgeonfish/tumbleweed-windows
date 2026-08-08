@@ -70,28 +70,6 @@ pub(crate) fn settings_page(
         }
     });
 
-    // The QR is drawn in the system accent color, which the user can change in
-    // Windows Settings while this page is open. The canvas is demand-driven and
-    // only repaints on remount, so watch `UISettings.ColorValuesChanged` and
-    // bump a counter that keys the canvas, forcing it to remount and repaint
-    // with the new accent color.
-    let (accent_gen, set_accent_gen) = cx.use_async_state(0u64);
-    let accent_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    cx.use_effect_with_cleanup((), {
-        let set_accent_gen = set_accent_gen.clone();
-        let counter = accent_counter.clone();
-        move || {
-            let ui = windows::UI::ViewManagement::UISettings::new().ok()?;
-            let revoker = ui
-                .ColorValuesChanged(move |_, _| {
-                    let next = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    set_accent_gen.call(next);
-                })
-                .ok()?;
-            Some(move || drop(revoker))
-        }
-    });
-
     let ssh_title = TextBlock::new("SSH pairing")
         .font_size(20.0)
         .margin(Thickness {
@@ -136,13 +114,15 @@ pub(crate) fn settings_page(
                     let m = m.clone();
                     let size = info.size;
                     let size_dips = crate::tools::qr_surface::qr_size(size);
-                    // `canvas` paints on mount unconditionally (unlike
-                    // `canvas_invalidated`, whose shared flag can be consumed by
-                    // a previous paint), so the QR never comes up blank after
-                    // switching tabs. Keyed by generation so a regenerated key
-                    // pair gets a fresh canvas.
-                    canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
-                        .with_key(format!("qr-{generation}-{accent_gen}"))
+                    // `animated_canvas` repaints every frame on the UI thread, so
+                    // the QR picks up a system accent-color change immediately
+                    // (the draw closure reads the accent each frame) without the
+                    // need for a cross-thread event subscription. It still paints
+                    // on mount, so the QR never comes up blank after switching
+                    // tabs. Keyed by generation so a regenerated key pair gets a
+                    // fresh canvas.
+                    animated_canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
+                        .with_key(format!("qr-{generation}"))
                         .width(size_dips)
                         .height(size_dips)
                         .into()
