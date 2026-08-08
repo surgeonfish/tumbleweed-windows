@@ -95,32 +95,6 @@ pub(crate) fn settings_page(
         }
     });
 
-    // The QR is drawn by a demand-driven canvas (SwapChainPanel). The module
-    // matrix is kept in a `use_ref` — a stable handle the draw closure reads on
-    // every repaint — and a re-render is forced once the matrix is ready so the
-    // canvas mounts immediately instead of waiting for an unrelated update.
-    let qr_matrix = cx.use_ref::<Option<(Vec<bool>, usize)>>(None);
-    let (qr_ready, set_qr_ready) = cx.use_state(false);
-    let qr_inv = cx.use_invalidator();
-    let qr_dep = pairing.1.as_ref().and_then(|i| i.matrix.clone());
-    cx.use_effect((qr_dep,), {
-        let pairing = pairing.clone();
-        let qr_matrix = qr_matrix.clone();
-        let set_qr_ready = set_qr_ready.clone();
-        let qr_inv = qr_inv.clone();
-        move || {
-            if let Some(info) = pairing.1.as_ref()
-                && let Some(m) = info.matrix.as_ref()
-            {
-                *qr_matrix.borrow_mut() = Some((m.to_vec(), info.size));
-                // use_ref mutations don't reconcile the tree; bump `qr_ready`
-                // so the canvas (built only when a matrix exists) mounts now.
-                set_qr_ready.call(true);
-                qr_inv.invalidate();
-            }
-        }
-    });
-
     let ssh_title = TextBlock::new("SSH pairing")
         .font_size(20.0)
         .margin(Thickness {
@@ -160,24 +134,23 @@ pub(crate) fn settings_page(
             text_block::caption(info.error.clone().unwrap_or_default()).into()
         }
         Some(info) => {
-            let qr_el: Element = if qr_ready && qr_matrix.borrow().is_some() {
-                // The draw closure reads from the stable ref, so it always
-                // paints the latest matrix (including after regeneration).
-                let qr_matrix = qr_matrix.clone();
-                let qr_inv = qr_inv.clone();
-                let size = qr_matrix.borrow().as_ref().map(|(_, s)| *s).unwrap_or(0);
-                let size_dips = crate::tools::qr_surface::qr_size(size);
-                canvas_invalidated(&qr_inv, move |ctx| {
-                    if let Some((m, size)) = qr_matrix.borrow().as_ref() {
-                        crate::tools::qr_surface::draw_qr(ctx, m, *size)?;
-                    }
-                    Ok(())
-                })
-                .width(size_dips)
-                .height(size_dips)
-                .into()
-            } else {
-                text_block::caption("Rendering QR code…").into()
+            let qr_el: Element = match &info.matrix {
+                Some(m) => {
+                    let m = m.clone();
+                    let size = info.size;
+                    let size_dips = crate::tools::qr_surface::qr_size(size);
+                    // `canvas` paints on mount unconditionally (unlike
+                    // `canvas_invalidated`, whose shared flag can be consumed by
+                    // a previous paint), so the QR never comes up blank after
+                    // switching tabs. Keyed by generation so a regenerated key
+                    // pair gets a fresh canvas.
+                    canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
+                        .with_key(format!("qr-{generation}"))
+                        .width(size_dips)
+                        .height(size_dips)
+                        .into()
+                }
+                None => text_block::caption("Rendering QR code…").into(),
             };
             let meta = format!(
                 "{} · {} · {} · v{}",
