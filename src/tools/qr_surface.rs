@@ -14,7 +14,7 @@
 
 use windows::UI::ViewManagement::{UIColorType, UISettings};
 use windows_canvas::{ColorF, Rect};
-use windows_reactor::{DrawContext, Result};
+use windows_reactor::{ColorScheme, DrawContext, Result, current_color_scheme};
 
 /// QR quiet zone, in modules.
 const QUIET: f32 = 4.0;
@@ -41,12 +41,22 @@ fn accent_color() -> ColorF {
     }
 }
 
-/// Draw `matrix` (row-major, `size` x `size`) into `ctx`: a transparent
-/// background with accent-colored modules, so the QR floats on whatever is
-/// behind the canvas instead of a solid white box. Call from a
-/// `canvas`/`canvas_invalidated` draw callback.
+/// The WinUI `ControlFillColorDefaultBrush` color for the current theme, as a
+/// Direct2D color. This is the solid color behind the QR modules (the same
+/// fill the container border gets from `ThemeRef::ControlFill`), so the QR
+/// always renders on a ControlFill card.
+fn control_fill_color() -> ColorF {
+    match current_color_scheme() {
+        ColorScheme::Dark => ColorF::from_rgb8(43, 43, 43),
+        ColorScheme::Light => ColorF::from_rgb8(243, 243, 243),
+    }
+}
+
+/// Draw `matrix` (row-major, `size` x `size`) into `ctx`: a ControlFill
+/// background with accent-colored modules. Call from a `canvas`/`canvas`
+/// draw callback.
 pub(crate) fn draw_qr(ctx: &DrawContext, matrix: &[bool], size: usize) -> Result<()> {
-    ctx.clear(ColorF::TRANSPARENT);
+    ctx.clear(control_fill_color());
     let brush = ctx.create_solid_brush(accent_color())?;
     for y in 0..size {
         for x in 0..size {
