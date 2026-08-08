@@ -128,6 +128,35 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
+    // Online/offline status of paired devices, checked over SSH (`tumbleweed
+    // ping`) every 15 s in the background, so the Devices page stays fresh even
+    // when a phone comes/goes offline.
+    let (paired_online, set_paired_online) =
+        cx.use_async_state((0u64, std::collections::HashMap::<String, bool>::new()));
+    cx.use_effect((), {
+        let set_paired_online = set_paired_online.clone();
+        move || {
+            std::thread::spawn(move || {
+                let mut generation = 0u64;
+                let mut last: std::collections::HashMap<String, bool> =
+                    std::collections::HashMap::new();
+                loop {
+                    let ips = tools::ssh_server::paired_device_ips();
+                    let map: std::collections::HashMap<String, bool> = ips
+                        .iter()
+                        .map(|ip| (ip.clone(), tools::ssh_send::is_online(ip)))
+                        .collect();
+                    if map != last {
+                        generation += 1;
+                        last = map.clone();
+                        set_paired_online.call((generation, map));
+                    }
+                    std::thread::sleep(Duration::from_secs(15));
+                }
+            });
+        }
+    });
+
     // Device picked in the footer dropdown; Explorer uploads target this device.
     let (selected_device, set_selected_device) = cx.use_state(None::<DiscoveredDevice>);
 
@@ -244,6 +273,7 @@ fn app(cx: &mut RenderCx) -> Element {
             &tools::mdns::device_host_name(),
             &tools::mdns::local_ip_addrs(),
             env!("CARGO_PKG_VERSION"),
+            &paired_online.1,
         ),
         _ => settings_page(cx, theme, set_theme.clone()),
     };

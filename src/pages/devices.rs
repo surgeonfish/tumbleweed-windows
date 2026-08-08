@@ -95,40 +95,20 @@ fn peer_card(d: &DiscoveredDevice, online: Option<bool>) -> Element {
 /// PC, then the new devices discovered on the LAN. Renders inside the app's
 /// shared [`RenderCx`]; the discovered list is owned by `app` and passed in.
 pub(crate) fn devices_page(
-    cx: &mut RenderCx,
+    _cx: &mut RenderCx,
     devices: &[DiscoveredDevice],
     this_name: &str,
     this_ips: &[String],
     this_version: &str,
+    online: &std::collections::HashMap<String, bool>,
 ) -> Element {
     // This device card — always shown as a PC (it's a Windows app).
     let this_card = device_card(this_name, THIS_DEVICE_KIND, this_version, this_ips, None);
 
-    // Online status for paired devices, checked over SSH (`tumbleweed ping`)
-    // in the background and keyed by IP.
-    let paired_ips = crate::tools::ssh_server::paired_device_ips();
-    let (online, set_online) =
-        cx.use_async_state((0u64, std::collections::HashMap::<String, bool>::new()));
-    let generation = online.0;
-    cx.use_effect((paired_ips.clone(),), {
-        let set_online = set_online.clone();
-        let paired_ips = paired_ips.clone();
-        move || {
-            if paired_ips.is_empty() {
-                return;
-            }
-            std::thread::spawn(move || {
-                let map: std::collections::HashMap<String, bool> = paired_ips
-                    .iter()
-                    .map(|ip| (ip.clone(), crate::tools::ssh_send::is_online(ip)))
-                    .collect();
-                set_online.call((generation + 1, map));
-            });
-        }
-    });
-
     // Split the discovered peers into already-paired (registered a key during
-    // pairing) and new ones. A device that already paired is not "new".
+    // pairing) and new ones. A device that already paired is not "new". The
+    // paired devices' online status comes from `app` (refreshed periodically).
+    let paired_ips = crate::tools::ssh_server::paired_device_ips();
     let (paired, new): (Vec<&DiscoveredDevice>, Vec<&DiscoveredDevice>) = devices
         .iter()
         .partition(|d| paired_ips.iter().any(|ip| ip == &d.ip.to_string()));
@@ -141,7 +121,7 @@ pub(crate) fn devices_page(
     if !paired.is_empty() {
         children.push(body_strong("Paired devices").into());
         for d in paired {
-            let on = online.1.get(&d.ip.to_string()).copied();
+            let on = online.get(&d.ip.to_string()).copied();
             children.push(peer_card(d, on));
         }
     }
