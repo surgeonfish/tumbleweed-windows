@@ -592,15 +592,23 @@ fn peers() -> &'static std::sync::Mutex<Vec<(DiscoveredDevice, std::time::Instan
 /// device type/version from the advertisement's TXT record so peers are
 /// labelled without a separate probe.
 fn record_peer_packet(pkt: &[u8]) {
-    let (instances, ips, txt, goodbye) = parse_discovery_response(pkt);
+    let (owners, instances, ips, txt, goodbye) = parse_discovery_response(pkt);
     if ips.is_empty() {
         return;
     }
     // Only treat packets that actually advertise the Tumbleweed service as
-    // peers. Any device on the LAN can send mDNS A records (printers, TVs,
-    // other OS mDNS responders, etc.), but without a `_tumbleweed._tcp` PTR
-    // it isn't a Tumbleweed device and must not show up in the device list.
-    if !instances.iter().any(|i| i.contains("_tumbleweed._tcp")) {
+    // peers. The service is announced with a PTR record whose owner is
+    // `_tumbleweed._tcp.local`; its rdata (instance) can be either
+    // `host._tumbleweed._tcp.local` (this app) or just `host._tcp.local`
+    // (standard mDNS-SD), so check the owner too. Any device on the LAN can
+    // send mDNS A records (printers, TVs, other OS responders), but without a
+    // `_tumbleweed._tcp` service record or a `tumbleweed-*` instance it isn't
+    // a Tumbleweed device and must not show up in the device list.
+    let is_tumbleweed = owners.iter().any(|o| o.contains("_tumbleweed._tcp"))
+        || instances
+            .iter()
+            .any(|i| i.contains("_tumbleweed._tcp") || i.starts_with("tumbleweed-"));
+    if !is_tumbleweed {
         return;
     }
     let own_ips = local_ipv4_addrs();
@@ -881,10 +889,19 @@ fn log_snapshot_change(snapshot: &[DiscoveredDevice]) {
     }
 }
 
-/// Parse a discovery response, collecting PTR instance names, A-record IPs and
-/// the TXT key-values (type/version) advertised for the peer.
-fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::collections::HashMap<String, String>, bool) {
-    let empty = || (Vec::new(), Vec::new(), std::collections::HashMap::new(), false);
+/// Parse a discovery response, collecting answer owner names, PTR instance
+/// names, A-record IPs and the TXT key-values (type/version) advertised for
+/// the peer.
+fn parse_discovery_response(
+    pkt: &[u8],
+) -> (
+    Vec<String>,                                        // owners
+    Vec<String>,                                        // instances (PTR rdata)
+    Vec<IpAddr>,
+    std::collections::HashMap<String, String>,
+    bool,
+) {
+    let empty = || (Vec::new(), Vec::new(), Vec::new(), std::collections::HashMap::new(), false);
     if pkt.len() < 12 {
         return empty();
     }
@@ -904,15 +921,17 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::colle
         pos += 4;
     }
 
+    let mut owners = Vec::new();
     let mut instances = Vec::new();
     let mut ips = Vec::new();
     let mut txt = std::collections::HashMap::new();
     let mut goodbye = false;
 
     for _ in 0..ancount {
-        let Some((_owner, consumed)) = read_name(pkt, pos) else {
+        let Some((owner, consumed)) = read_name(pkt, pos) else {
             break;
         };
+        owners.push(owner);
         pos += consumed;
         if pos + 10 > pkt.len() {
             break;
@@ -962,5 +981,5 @@ fn parse_discovery_response(pkt: &[u8]) -> (Vec<String>, Vec<IpAddr>, std::colle
         pos += rdlen;
     }
 
-    (instances, ips, txt, goodbye)
+    (owners, instances, ips, txt, goodbye)
 }
