@@ -156,6 +156,29 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
+    // The pairing QR is drawn in the system accent color, which can change in
+    // Windows Settings at any time. Use the native `UISettings.ColorValuesChanged`
+    // event (fires on a background thread) and bump `accent_gen` through the
+    // marshalled async-state setter; the Settings page keys the QR canvas on it
+    // so it repaints with the new accent. Subscribed at app level (the cleanup
+    // only runs at shutdown) so the revoker is never dropped while the
+    // background event is in flight — that drop was the earlier crash.
+    let (accent_gen, set_accent_gen) = cx.use_async_state(0u32);
+    cx.use_effect_with_cleanup((), {
+        let set_accent_gen = set_accent_gen.clone();
+        move || {
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let ui = windows::UI::ViewManagement::UISettings::new().ok()?;
+            let revoker = ui
+                .ColorValuesChanged(move |_, _| {
+                    let next = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    set_accent_gen.call(next);
+                })
+                .ok()?;
+            Some(move || drop(revoker))
+        }
+    });
+
     // "File sent to the picked device" result, marshalled from the worker thread
     // back to the UI thread. Success is recorded in Transfer history; both
     // outcomes show an InfoBar in Explorer that auto-dismisses after 5 seconds.
@@ -258,7 +281,7 @@ fn app(cx: &mut RenderCx) -> Element {
             env!("CARGO_PKG_VERSION"),
             &paired_online.1,
         ),
-        _ => settings_page(cx, theme, set_theme.clone()),
+        _ => settings_page(cx, theme, set_theme.clone(), accent_gen),
     };
 
     // Confirm incoming uploads (front of the queue): show a dialog; if

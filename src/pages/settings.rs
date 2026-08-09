@@ -46,6 +46,7 @@ pub(crate) fn settings_page(
     cx: &mut RenderCx,
     theme: RequestedTheme,
     set_theme: SetState<RequestedTheme>,
+    accent_gen: u32,
 ) -> Element {
     // ---- SSH pairing section ----
     // State: (generation counter, pairing result). The counter is bumped on
@@ -124,7 +125,7 @@ pub(crate) fn settings_page(
                     // the current accent/ControlFill colors.
                     canvas(move |ctx| crate::tools::qr_surface::draw_qr(ctx, &m, size))
                         .with_key(format!(
-                            "qr-{generation}-{}",
+                            "qr-{generation}-{accent_gen}-{}",
                             matches!(
                                 current_color_scheme(),
                                 windows_reactor::ColorScheme::Dark
