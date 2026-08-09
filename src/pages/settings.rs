@@ -146,12 +146,7 @@ pub(crate) fn settings_page(
             grid((
                 // QR code is in column 0, the key pair info is in column 1,
                 // and the meta info is in column 2.
-                border(qr_el)
-                    .corner_radius(16.0)
-                    .background(ThemeRef::ControlFill)
-                    .border_brush(ThemeRef::CardStroke)
-                    .border_thickness(Thickness::uniform(1.0))
-                    .grid_column(0),
+                qr_el.grid_column(0),
                 hstack((
                     TextBlock::new("\u{E8D7}")
                         .font_family("Segoe Fluent Icons")
