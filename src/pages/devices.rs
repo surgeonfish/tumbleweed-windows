@@ -6,7 +6,7 @@ use crate::tools::mdns::DiscoveredDevice;
 const THIS_DEVICE_KIND: &str = "pc";
 
 /// Segoe Fluent Icons glyph for a device type.
-fn kind_icon(kind: &str) -> &'static str {
+pub(crate) fn kind_icon(kind: &str) -> &'static str {
     match kind {
         "phone" => "\u{E8EA}", // Smartphone
         _ => "\u{E977}",       // DesktopPC

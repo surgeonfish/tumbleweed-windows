@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 use windows_reactor::*;
 use crate::tools::mdns::DiscoveredDevice;
 
@@ -174,13 +175,19 @@ pub(crate) fn explorer_page(
     _cx: &mut RenderCx,
     set_current_path: SetState<PathBuf>,
     data: &ExplorerData,
-    hovered_index: Option<usize>,
-    set_hovered_index: SetState<Option<usize>>,
-    selected_device: Option<DiscoveredDevice>,
+    devices: &[DiscoveredDevice],
+    selected_index: Option<usize>,
+    set_selected_index: SetState<Option<usize>>,
+    last_tap: HookRef<(Option<usize>, Instant)>,
     set_upload_result: AsyncSetState<Option<UploadOutcome>>,
     upload_outcome: &Option<UploadOutcome>,
     search_target: Option<usize>,
 ) -> Element {
+    // Own the device list: the list-view row builder is a `'static` closure,
+    // so it can't borrow the `&[DiscoveredDevice]` parameter. Cloning here lets
+    // each row's device-picker flyout capture the devices by value.
+    let devices = devices.to_vec();
+
     // Clicking a breadcrumb navigates back to that ancestor folder.
     let crumb_set = set_current_path.clone();
     let crumb_items = data.crumbs.clone();
@@ -200,25 +207,40 @@ pub(crate) fn explorer_page(
             format!("📄  {}", e.name)
         };
 
-        // Upload button, shown only while this row is hovered.
-        let is_hovered = hovered_index == Some(idx);
+        // Upload button that opens a CommandBarFlyout listing every discovered
+        // device as an AppBarButton (device-type icon + device name), so the
+        // sender picks the destination right from the row. Revealed only while
+        // this row is selected.
+        let is_selected = selected_index == Some(idx);
+        let device_commands: Vec<CommandBarCommandDef> = devices
+            .iter()
+            .map(|d| {
+                app_bar_button_icon(
+                    d.name.clone(),
+                    Icon::font_family(
+                        crate::pages::devices::kind_icon(&d.kind),
+                        "Segoe Fluent Icons",
+                    ),
+                )
+            })
+            .collect();
         let upload = button("")
             .icon(Symbol::Upload)
             .subtle()
-            .enabled(is_hovered)
-            .opacity(if is_hovered { 1.0 } else { 0.0 })
-            .on_click({
-                let device = selected_device.clone();
+            .enabled(is_selected)
+            .opacity(if is_selected { 1.0 } else { 0.0 })
+            .command_bar_flyout(device_commands)
+            .on_command_bar_flyout_click({
                 let path = e.path.clone();
                 let name = e.name.clone();
                 let set_upload_result = set_upload_result.clone();
-                move || {
-                    // Only send when a device is picked in the footer dropdown.
-                    let Some(device) = device.as_ref() else {
-                        println!("[explorer] no device selected; upload skipped");
+                let devices = devices.to_vec();
+                move |label: String| {
+                    // The clicked AppBarButton's label is the device name.
+                    let Some(device) = devices.iter().find(|d| d.name == label) else {
                         set_upload_result.call(Some(UploadOutcome::Error(format!(
-                            "No device selected; could not send"
-                            ))));
+                            "Device not found: {label}"
+                        ))));
                         return;
                     };
                     let ip = device.ip;
@@ -247,10 +269,9 @@ pub(crate) fn explorer_page(
                 }
             });
 
-        // The whole entry is hoverable: a full-width Grid (label left, upload
-        // button right) with a transparent background so the empty row area
-        // also hit-tests. The hover handlers live on the entry, not on the
-        // inner content.
+        // The whole entry is a full-width Grid (label left, upload button
+        // right) with a transparent background so the empty row area also
+        // hit-tests.
         grid((
             TextBlock::new(label)
                 .padding(Thickness::uniform(8.0))
@@ -261,27 +282,41 @@ pub(crate) fn explorer_page(
         ))
         .columns([GridLength::Auto, GridLength::STAR])
         .background(Color { a: 0, r: 0, g: 0, b: 0 })
-        .on_pointer_entered({
-            let set_hovered_index = set_hovered_index.clone();
-            move |_info: PointerEventInfo| set_hovered_index.call(Some(idx))
-        })
-        .on_pointer_exited({
-            let set_hovered_index = set_hovered_index.clone();
-            move || set_hovered_index.call(None)
+        .on_pointer_pressed({
+            // A quick second press on the same row opens a folder; a single
+            // press only selects it (highlights + reveals the upload button).
+            // We count pointer presses rather than `Tapped` because WinUI
+            // swallows the second Tapped of a double-click into DoubleTapped,
+            // which would make double-click detection need a third click.
+            let set_current = set_current_path.clone();
+            let last_tap = last_tap.clone();
+            let path = e.path.clone();
+            let is_dir = e.is_dir;
+            move |info: PointerEventInfo| {
+                // Only count left-button presses (ignore right/middle clicks).
+                if !info.is_left_button_pressed {
+                    return;
+                }
+                let now = Instant::now();
+                let mut last = last_tap.borrow_mut();
+                let is_double = last.0 == Some(idx)
+                    && now.duration_since(last.1) <= Duration::from_millis(500);
+                *last = (Some(idx), now);
+                drop(last);
+                if is_double && is_dir {
+                    set_current.call(path.clone());
+                }
+            }
         })
     })
     .with_key_selector(|e| e.path.to_string_lossy().to_string())
     .selected_index(search_target.map(|i| i as i32).unwrap_or(-1))
     .on_selection_changed({
-        let set_current = set_current_path.clone();
-        let entries = data.entries.clone();
+        let set_selected_index = set_selected_index.clone();
         move |idx: i32| {
             if idx >= 0 {
-                if let Some(entry) = entries.get(idx as usize) {
-                    if entry.is_dir {
-                        set_current.call(entry.path.clone());
-                    }
-                }
+                // Remember the selection so the row's upload button is revealed.
+                set_selected_index.call(Some(idx as usize));
             }
         }
     })

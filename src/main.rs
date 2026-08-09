@@ -18,12 +18,6 @@ use tools::settings_store::{load_theme, save_theme};
 use tools::transfer_progress::TransferProgress;
 use tools::upload_gate::{IncomingUpload, UploadDecision};
 
-/// One line for a discovered device in the footer dropdown: just its display
-/// name.
-fn device_text(d: &DiscoveredDevice) -> String {
-    d.name.clone()
-}
-
 fn app(cx: &mut RenderCx) -> Element {
     let (page, set_page) = cx.use_state("explorer".to_string());
     let (search_text, set_search_text) = cx.use_state(String::new());
@@ -52,8 +46,13 @@ fn app(cx: &mut RenderCx) -> Element {
     // Listing + breadcrumbs recompute only when the folder changes.
     let data = cx.use_memo((current_path.clone(),), || view_data(&current_path));
 
-    // Hovered row in the explorer list — reveals the per-row upload button.
-    let (hovered_index, set_hovered_index) = cx.use_state(None::<usize>);
+    // Explorer's selected row (reveals its upload button) and the last-tap
+    // time used for double-click folder navigation. These live at app level
+    // because every page shares one positional hook cursor — a hook created
+    // inside a page function would collide with another page's hooks (e.g.
+    // Settings) and break switching to it.
+    let (selected_index, set_selected_index) = cx.use_state(None::<usize>);
+    let last_tap = cx.use_ref((None::<usize>, std::time::Instant::now()));
 
     // Transfer history, shared across pages. The Explorer upload button appends
     // uploads; downloads will be recorded once a download action exists.
@@ -157,25 +156,6 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
-    // Device picked in the footer dropdown; Explorer uploads target this device.
-    let (selected_device, set_selected_device) = cx.use_state(None::<DiscoveredDevice>);
-
-    // If the picked device drops off the discovery list (went offline), forget
-    // the selection so we never try to send to a stale address.
-    cx.use_effect((devices.clone(),), {
-        let devices = devices.clone();
-        let selected_device = selected_device.clone();
-        let set_selected_device = set_selected_device.clone();
-        move || {
-            let Some(picked) = selected_device.as_ref() else {
-                return;
-            };
-            if !devices.iter().any(|d| d.ip == picked.ip) {
-                set_selected_device.call(None);
-            }
-        }
-    });
-
     // "File sent to the picked device" result, marshalled from the worker thread
     // back to the UI thread. Success is recorded in Transfer history; both
     // outcomes show an InfoBar in Explorer that auto-dismisses after 5 seconds.
@@ -253,9 +233,10 @@ fn app(cx: &mut RenderCx) -> Element {
             cx,
             set_current_path.clone(),
             &data,
-            hovered_index,
-            set_hovered_index.clone(),
-            selected_device.clone(),
+            &devices,
+            selected_index,
+            set_selected_index.clone(),
+            last_tap.clone(),
             set_upload_result.clone(),
             &upload_result,
             search_target,
@@ -317,51 +298,10 @@ fn app(cx: &mut RenderCx) -> Element {
         None => ContentDialog::new("").is_open(false),
     };
 
-    // Title-bar footer: dropdown listing discovered devices + count badge.
-    // Picking a device records it so Explorer uploads target that device.
-    // While no devices are found, show an indeterminate ring (searching);
-    // once one or more are discovered, show the numeric InfoBadge instead.
-    let device_label = selected_device
-        .as_ref()
-        .map(device_text)
-        .unwrap_or_else(|| "Devices".to_string());
-
-    let count_badge: Element = if devices.is_empty() {
-        ProgressRing::indeterminate()
-            .width(18.0)
-            .height(18.0)
-            .into()
-    } else {
-        InfoBadge::numeric(devices.len() as i32).into()
-    };
-
-    let footer: Element = hstack((
-        drop_down_button(device_label)
-            .menu_flyout(
-                devices
-                    .iter()
-                    .map(|d| menu_item(device_text(d)))
-                    .collect(),
-            )
-            .on_item_clicked({
-                let devices = devices.clone();
-                let set_selected_device = set_selected_device.clone();
-                move |text: String| {
-                    if let Some(d) = devices.iter().find(|d| device_text(d) == text) {
-                        set_selected_device.call(Some(d.clone()));
-                    }
-                }
-            }),
-        count_badge,
-    ))
-    .spacing(8.0)
-    .into();
-
     grid((
         TitleBar::new("Tumbleweed")
             .tall(true)
             .content(search_box)
-            .footer(footer)
             .grid_row(0),
         NavigationView::new(menu_items, body)
             .selected_tag(page.clone())
