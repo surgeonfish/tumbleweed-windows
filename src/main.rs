@@ -224,7 +224,9 @@ fn app(cx: &mut RenderCx) -> Element {
 
     let menu_items = [
         NavViewItem::new("Explorer").tag("explorer").icon(Symbol::Folder),
-        NavViewItem::new("Transfer").tag("transfer").icon(Symbol::Send),
+        NavViewItem::new("Transfer")
+            .tag("transfer")
+            .icon(Icon::font_family("\u{F785}", "Segoe Fluent Icons")),
         NavViewItem::new("Devices").tag("devices").icon(Symbol::Scan),
     ];
 
