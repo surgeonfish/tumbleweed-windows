@@ -97,7 +97,11 @@ pub(crate) fn settings_page(
                         .grid_column(0),
                     vstack((
                         body_strong("Key Pair"),
-                        caption("Generated")
+                        caption(if crate::tools::ssh_pair::has_keypair() {
+                            "Generated"
+                        } else {
+                            "Not generated"
+                        })
                     ))
                     .spacing(4.0)
                     .vertical_alignment(VerticalAlignment::Center),
