@@ -584,6 +584,9 @@ struct SftpSession {
     /// Per-open-handle transfer progress: (file name, total bytes, done bytes)
     /// so the Transfer page can show a live bar for incoming files.
     progress: HashMap<String, (String, u64, u64)>,
+    /// Handle -> destination path, so a cancelled receive can delete the
+    /// partially-written file.
+    dest_paths: HashMap<String, PathBuf>,
     /// Upload-gate id while awaiting the user's confirmation in `open`, so the
     /// queued dialog can be cancelled if the connection dies.
     opening_gate: Option<u64>,
@@ -598,6 +601,7 @@ impl SftpSession {
             root,
             files: HashMap::new(),
             progress: HashMap::new(),
+            dest_paths: HashMap::new(),
             opening_gate: None,
             pending_sizes,
         }
@@ -629,6 +633,7 @@ impl SftpSession {
         let handle = filename.clone();
         self.files.insert(handle.clone(), file);
         self.progress.insert(handle.clone(), (name.clone(), total, 0));
+        self.dest_paths.insert(handle.clone(), path.clone());
         crate::tools::transfer_progress::start(&name, false, total);
         Ok(Handle { id, handle })
     }
@@ -769,6 +774,7 @@ impl russh_sftp::server::Handler for SftpSession {
         let handle = filename.clone();
         self.files.insert(handle.clone(), file);
         self.progress.insert(handle.clone(), (name.clone(), total, 0));
+        self.dest_paths.insert(handle.clone(), dest.clone());
         crate::tools::transfer_progress::start(&name, false, total);
         Ok(Handle { id, handle })
     }
@@ -781,6 +787,22 @@ impl russh_sftp::server::Handler for SftpSession {
         data: Vec<u8>,
     ) -> Result<Status, StatusCode> {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+        // Real cancellation: the user deleted this transfer on the Transfer
+        // page. Abort the receive, discard the partial file, and fail the
+        // write so the sender stops.
+        let cancelled = self
+            .progress
+            .get(&handle)
+            .map(|p| crate::tools::transfer_progress::is_cancelled(&p.0))
+            .unwrap_or(false);
+        if cancelled {
+            self.files.remove(&handle);
+            self.progress.remove(&handle);
+            if let Some(path) = self.dest_paths.remove(&handle) {
+                let _ = std::fs::remove_file(&path);
+            }
+            return Err(StatusCode::Failure);
+        }
         let Some(file) = self.files.get_mut(&handle) else {
             return Err(StatusCode::Failure);
         };

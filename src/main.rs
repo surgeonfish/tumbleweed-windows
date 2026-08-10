@@ -55,6 +55,11 @@ fn app(cx: &mut RenderCx) -> Element {
     let (selected_index, set_selected_index) = cx.use_state(None::<usize>);
     let last_tap = cx.use_ref((None::<usize>, std::time::Instant::now()));
 
+    // Transfer list's selected row (reveals its delete button). Kept at app
+    // level for the same reason as Explorer's selected row: every page shares
+    // one positional hook cursor.
+    let (transfer_selected, set_transfer_selected) = cx.use_state(None::<usize>);
+
     // Transfer history, shared across pages. The Explorer upload button appends
     // uploads; downloads will be recorded once a download action exists.
     let (transfer_history, dispatch_transfer) = cx.use_reducer_fn(
@@ -75,6 +80,10 @@ fn app(cx: &mut RenderCx) -> Element {
                 });
                 h
             }
+            TransferAction::Remove(name, direction) => history
+                .into_iter()
+                .filter(|r| r.name != name || r.direction != direction)
+                .collect(),
         },
         // Load the history persisted by a previous launch.
         load_history(),
@@ -297,6 +306,9 @@ fn app(cx: &mut RenderCx) -> Element {
             transfer_tab,
             set_transfer_tab.clone(),
             &transfers,
+            transfer_selected,
+            set_transfer_selected.clone(),
+            dispatch_transfer.clone(),
         ),
         "devices" => devices_page(
             cx,

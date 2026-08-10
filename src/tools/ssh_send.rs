@@ -85,6 +85,28 @@ async fn push_file(
     len: u64,
     src: &mut std::fs::File,
 ) -> anyhow::Result<()> {
+    // Race the whole transfer against a poll of the shared cancel flag, so a
+    // cancel from the Transfer page aborts promptly even while we're blocked
+    // awaiting the phone's confirmation dialog (the `sftp.create` below).
+    // Dropping `push_body` mid-await closes the session, which makes the phone
+    // clean up its side too.
+    tokio::select! {
+        _ = cancel_poll(name) => {
+            super::mdns::log_msg(&format!("[ssh-send] upload {name} cancelled"));
+            Err(anyhow::anyhow!("transfer cancelled"))
+        }
+        result = push_body(name, ip, port, len, src) => result,
+    }
+}
+
+/// The body of the push: connect, announce, open, and stream the bytes.
+async fn push_body(
+    name: &str,
+    ip: IpAddr,
+    port: u16,
+    len: u64,
+    src: &mut std::fs::File,
+) -> anyhow::Result<()> {
     let session = open_ssh_session(ip, port).await?;
 
     // Tell the phone how big this file is before opening the SFTP handle, so
@@ -125,16 +147,33 @@ async fn push_file(
         .await
         .map_err(|e| anyhow::anyhow!("open {name} on {ip}: {e}"))?;
 
-    // Stream the body, reporting byte counts every ~1%.
+    // Real cancellation: the Transfer page's delete button may abort this
+    // upload mid-stream. Check before the first chunk and before each one.
+    if super::transfer_progress::is_cancelled(name) {
+        return Err(anyhow::anyhow!("transfer cancelled"));
+    }
+    // Stream the body, reporting byte counts every ~1%. Each write is also
+    // guarded by a stall backstop: if the receiver stops consuming (its SSH
+    // window stays full, e.g. the peer died or ignored our cancel), assume
+    // the transfer is dead and abort.
     let mut done = 0u64;
     let mut last = 0.0f32;
     let mut buf = vec![0u8; 256 * 1024];
     loop {
+        if super::transfer_progress::is_cancelled(name) {
+            return Err(anyhow::anyhow!("transfer cancelled"));
+        }
         let n = src.read(&mut buf)?;
         if n == 0 {
             break;
         }
-        remote.write_all(&buf[..n]).await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            remote.write_all(&buf[..n]),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("transfer stalled (no progress for 5 s)"))?
+        .map_err(|e| anyhow::anyhow!("write: {e}"))?;
         done += n as u64;
         if len > 0 {
             let frac = (done as f32) / (len as f32);
@@ -150,6 +189,18 @@ async fn push_file(
 
     super::mdns::log_msg(&format!("[ssh-send] uploaded {name} -> {ip}:{port}"));
     Ok(())
+}
+
+/// Polls the shared cancel flag every 100 ms so a cancel interrupts a blocking
+/// await (e.g. the confirmation-dialog wait) instead of only the data loop.
+/// `is_cancelled` consumes the flag, so this future completes exactly once.
+async fn cancel_poll(name: &str) {
+    loop {
+        if super::transfer_progress::is_cancelled(name) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Announce a file's size to the peer over a `tumbleweed transfer` exec

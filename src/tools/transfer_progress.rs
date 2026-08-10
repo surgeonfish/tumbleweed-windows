@@ -1,7 +1,7 @@
 //! Tracks in-progress file transfers (uploads and downloads) so the UI can
 //! show a progress bar and transferred/total byte counts on the matching row.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use windows_reactor::AsyncSetState;
 
@@ -21,9 +21,17 @@ pub(crate) struct TransferProgress {
 /// name -> (is_upload, done_bytes, total_bytes)
 static CURRENT: OnceLock<Mutex<HashMap<String, (bool, u64, u64)>>> = OnceLock::new();
 static SETTER: Mutex<Option<AsyncSetState<Vec<TransferProgress>>>> = Mutex::new(None);
+/// Names whose in-progress transfer the user asked to abort. Each is consumed
+/// (check-and-clear) by the transfer loop, so a stale flag can never cancel a
+/// later transfer that happens to reuse the name.
+static CANCEL: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn current() -> &'static Mutex<HashMap<String, (bool, u64, u64)>> {
     CURRENT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancel_set() -> &'static Mutex<HashSet<String>> {
+    CANCEL.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Called once from the UI thread to install the state setter that receives
@@ -55,7 +63,29 @@ pub(crate) fn update(name: &str, done: u64, total: u64) {
 /// Remove `name` (transfer finished or failed).
 pub(crate) fn finish(name: &str) {
     current().lock().unwrap().remove(name);
+    cancel_set().lock().unwrap().remove(name);
     push();
+}
+
+/// Ask that the in-progress transfer `name` be aborted. Removes the row from
+/// the in-progress list right away and flags the transfer; the transfer loop
+/// observes the flag (via [`is_cancelled`]) and stops. No-op if the transfer
+/// already finished.
+pub(crate) fn request_cancel(name: &str) {
+    let mut map = current().lock().unwrap();
+    if map.remove(name).is_none() {
+        return; // already finished — nothing to cancel
+    }
+    cancel_set().lock().unwrap().insert(name.to_string());
+    drop(map);
+    push();
+}
+
+/// `true` (once, then cleared) when a cancellation was requested for `name`.
+/// The consuming read means a stale flag can never cancel a later transfer
+/// that happens to reuse the name.
+pub(crate) fn is_cancelled(name: &str) -> bool {
+    cancel_set().lock().unwrap().remove(name)
 }
 
 /// Push the current snapshot to the UI thread (no-op until the setter is

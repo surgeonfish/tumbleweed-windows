@@ -41,6 +41,8 @@ pub(crate) enum TransferAction {
     MarkUploaded(String),
     /// Mark `name` as downloaded — fired when an incoming upload is accepted.
     MarkDownloaded(String),
+    /// Delete `name` (in `direction`) from the history.
+    Remove(String, TransferDirection),
 }
 
 /// Path to the transfer history file (`%LOCALAPPDATA%\tumbleweed\history.txt`).
@@ -168,8 +170,42 @@ fn make_rows(
 
 /// Build a list view of `rows`, each prefixed with its direction icon and, for
 /// in-progress transfers, a progress bar with transferred/total byte counts.
-fn history_list(rows: Vec<Row>) -> Element {
-    list_view(rows, |r, _| {
+/// Each row gets a delete button revealed only while it is selected.
+fn history_list(
+    rows: Vec<Row>,
+    selected_index: Option<usize>,
+    set_selected_index: SetState<Option<usize>>,
+    dispatch_transfer: Dispatch<TransferAction>,
+) -> Element {
+    list_view(rows, move |r, idx| {
+        // Delete button, revealed only while this row is selected (mirrors the
+        // Explorer page's reveal-on-selection upload button).
+        let is_selected = selected_index == Some(idx);
+        let delete = button("")
+            .icon(Icon::font_family("\u{E74D}", "Segoe Fluent Icons")) // Delete
+            .subtle()
+            .enabled(is_selected)
+            .opacity(if is_selected { 1.0 } else { 0.0 })
+            .on_click({
+                let dispatch_transfer = dispatch_transfer.clone();
+                let name = r.name.clone();
+                let direction = r.direction;
+                let is_in_progress = r.progress.is_some();
+                move || {
+                    if is_in_progress {
+                        // Real cancellation: abort the underlying transfer.
+                        crate::tools::transfer_progress::request_cancel(&name);
+                        if direction == TransferDirection::Downloaded {
+                            // A download's history record was added when the
+                            // incoming dialog was accepted; drop it too.
+                            dispatch_transfer
+                                .call(TransferAction::Remove(name.clone(), direction));
+                        }
+                    } else {
+                        dispatch_transfer.call(TransferAction::Remove(name.clone(), direction));
+                    }
+                }
+            });
         // Right-hand column: progress bar + "done / total" caption, or empty.
         let right = match r.progress {
             Some((done, total)) => {
@@ -243,8 +279,12 @@ fn history_list(rows: Vec<Row>) -> Element {
             .horizontal_alignment(HorizontalAlignment::Stretch)
             .grid_column(0),
             right.grid_column(1),
+            delete
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(2),
         ))
-        .columns([GridLength::Auto, GridLength::STAR])
+        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
         .horizontal_alignment(HorizontalAlignment::Stretch)
     })
     .with_key_selector(|r| {
@@ -254,6 +294,16 @@ fn history_list(rows: Vec<Row>) -> Element {
             r.name,
             r.direction.tag()
         )
+    })
+    .selected_index(selected_index.map(|i| i as i32).unwrap_or(-1))
+    .on_selection_changed({
+        let set_selected_index = set_selected_index.clone();
+        move |idx: i32| {
+            if idx >= 0 {
+                // Remember the selection so the row's delete button is revealed.
+                set_selected_index.call(Some(idx as usize));
+            }
+        }
     })
     .into()
 }
@@ -267,20 +317,30 @@ pub(crate) fn transfer_page(
     tab: String,
     set_tab: SetState<String>,
     transfers: &[TransferProgress],
+    selected_index: Option<usize>,
+    set_selected_index: SetState<Option<usize>>,
+    dispatch_transfer: Dispatch<TransferAction>,
 ) -> Element {
     // The list for the active sub-tab (in-progress items first).
     let content = match tab.as_str() {
-        "downloads" => history_list(make_rows(
-            history,
-            transfers,
-            Some(TransferDirection::Downloaded),
-        )),
-        "uploads" => history_list(make_rows(
-            history,
-            transfers,
-            Some(TransferDirection::Uploaded),
-        )),
-        _ => history_list(make_rows(history, transfers, None)),
+        "downloads" => history_list(
+            make_rows(history, transfers, Some(TransferDirection::Downloaded)),
+            selected_index,
+            set_selected_index.clone(),
+            dispatch_transfer.clone(),
+        ),
+        "uploads" => history_list(
+            make_rows(history, transfers, Some(TransferDirection::Uploaded)),
+            selected_index,
+            set_selected_index.clone(),
+            dispatch_transfer.clone(),
+        ),
+        _ => history_list(
+            make_rows(history, transfers, None),
+            selected_index,
+            set_selected_index.clone(),
+            dispatch_transfer.clone(),
+        ),
     };
 
     grid((
