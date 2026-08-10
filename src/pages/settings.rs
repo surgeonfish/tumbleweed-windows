@@ -25,7 +25,7 @@ pub(crate) fn settings_page(
         20.0,
         "SSH key pair",
         "Generate an SSH key pair so your phone can pair with this PC.",
-        button("Generate key pair").on_click({
+        button("Generate").on_click({
             let set_pairing = set_pairing.clone();
             let next_gen = generation + 1;
             move || {
