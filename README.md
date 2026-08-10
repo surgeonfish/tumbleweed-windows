@@ -3,75 +3,89 @@
 A LAN file-transfer app for Windows, built in **Rust + WinUI 3** with the
 [`windows-reactor`](https://github.com/microsoft/windows-rs) widget library.
 
-Each Tumbleweed instance is both an **HTTP file server** and an **mDNS
-advertiser**, so machines on the same network can discover each other and push
-files to one another — no cloud, no accounts, no configuration.
+Each Tumbleweed instance is both an **SSH/SFTP server** and an **mDNS
+advertiser**, so machines on the same network can discover each other, pair
+with a QR code, and push files to one another — no cloud, no accounts, no
+configuration.
 
 ![Tumbleweed screenshot](assets/screenshot.png)
 
 ## Features
 
-- **File explorer** — browse folders with a breadcrumb bar and a list view.
-  Remembers the last folder you opened (defaults to your Downloads folder on
-  first launch).
+- **File explorer** — browse folders with a breadcrumb bar, a **drive
+  selector**, and a manual **refresh button**. Remembers the last folder you
+  opened (defaults to your Downloads folder on first launch).
 - **Fuzzy search** — type in the title-bar search box to fuzzy-match files in
   the current folder; choosing a result selects it in the explorer list.
+- **SSH pairing** — generate an Ed25519 key pair on the Settings page; the app
+  renders it as an accent-colored QR code (with key-pair status and device
+  meta). Scan it with the Android app to pair this PC.
+- **Send to device** — every file row has a device flyout (device-type icon +
+  name) listing the discovered peers; pick one and hit the upload button to
+  push the file over SFTP. Success/failure is reported with a transient
+  InfoBar.
 - **mDNS advertising & discovery** — advertises this machine as
-  `tumbleweed-<hostname>.local` with the service type `_tumbleweed._tcp.local`,
-  and discovers other Tumbleweed devices on the LAN every few seconds. Your
-  own advertisement is filtered out.
-- **Devices tab** — shows this device (host name, IPs, version) and every
-  discovered device (name, IP, type, version) in two sections.
-- **Send to device** — pick a device in the title-bar footer, then click the
-  upload button on any file in the explorer to push it over the LAN.
-  Success/failure is reported with a transient InfoBar.
-- **HTTP file server** — serves the currently-explored folder over HTTP
-  (`GET` / `HEAD`) and accepts incoming files via `PUT`.
+  `tumbleweed-<hostname>.local` with the service type `_tumbleweed._tcp.local`
+  (device type + app version in the TXT record) and discovers other Tumbleweed
+  devices on the LAN every few seconds. Your own advertisement is filtered
+  out.
+- **Devices tab** — shows this device (host name, IPs, version) plus every
+  paired and newly-discovered device in separate sections, with a live
+  Online/Offline status for paired devices.
 - **Incoming upload confirmation** — the moment a transfer starts you're
   asked to confirm and pick the destination folder (queued if several arrive
   at once). If the app is in the background, the taskbar button flashes.
 - **Transfer history** — a Transfer page with **All / Downloads / Uploads**
   sections. Active transfers show a live progress bar with transferred/total
-  byte counts; the history persists across app restarts.
-- **Appearance settings** — switch the app theme (follow system / light /
-  dark) from the Settings page; the choice is remembered on restart.
+  byte counts; completed rows are removable and in-flight transfers are
+  cancellable. History persists across app restarts.
+- **Settings** — SSH key pair management + pairing QR, an **mDNS discovery
+  toggle**, and a theme selector (System / Light / Dark); the choices are
+  remembered on restart.
 
 ## How it works
 
 ```
 ┌───────────────┐   mDNS  _tumbleweed._tcp.local   ┌───────────────┐
 │  Tumbleweed A │ ◄──────────────────────────────► │  Tumbleweed B │
-│  (this app)   │    HTTP PUT /name  (file push)   │  (peer)       │
+│  (this app)   │    SSH/SFTP  (file push, :2222)  │  (peer)       │
 └───────────────┘                                  └───────────────┘
 ```
 
 - On startup the app advertises a unique per-machine hostname over **mDNS**
-  and starts an HTTP server on `8000`.
-- Other Tumbleweed apps are discovered via mDNS PTR/A queries.
-- To send a file, the app performs an `HTTP PUT` to the picked device's
-  address; the peer shows a confirmation dialog and saves the file wherever
+  and starts an **SSH server on port 2222** (russh).
+- Peers are discovered via mDNS PTR/A queries; each advertises its device type
+  and app version in the TXT record, so no extra HTTP probe is needed.
+- **Pairing:** the Settings page generates an Ed25519 key pair. The QR encodes
+  the public key, LAN IP, app version, and a one-time token. A phone connects
+  with `username == token`, authenticates with its own key, and runs
+  `tumbleweed add-key` to register itself for future transfers.
+- To send a file, the app opens an SFTP session to the picked device's SSH
+  port, verifies the peer's host key against its registered public key, and
+  pushes the file; the peer shows a confirmation dialog and saves it wherever
   you choose.
-- Directory listing over HTTP is **off by default** (opt-in), so the server
-  only serves individual files you explicitly share.
 
 ## Project structure
 
 ```
 src/
 ├── main.rs              # App entry: shared state, title bar, navigation
+├── controls/            # Shared widgets (section, simple_card)
 ├── pages/
-│   ├── devices.rs       # Devices tab (this device + discovered peers)
-│   ├── explorer.rs      # File explorer + fuzzy search + upload button
-│   ├── settings.rs      # Settings page (theme) with reusable simple_card
+│   ├── devices.rs       # Devices tab (this device, paired, new)
+│   ├── explorer.rs      # File explorer + fuzzy search + upload
+│   ├── settings.rs      # Settings page (pairing QR, theme, mDNS)
 │   └── transfer.rs      # Transfer history + live progress
 └── tools/
     ├── attention.rs     # Taskbar flashing for background alerts
-    ├── client.rs        # HTTP client used to push files to peers
     ├── mdns.rs          # mDNS advertiser + device discovery
     ├── picker.rs        # WinUI folder picker (incoming uploads)
-    ├── server.rs        # HTTP file server (GET / HEAD / PUT)
+    ├── qr_surface.rs    # QR rendering onto a canvas
     ├── settings_store.rs# INI-style settings persistence
-    ├── transfer_progress.rs # In-progress transfer tracking
+    ├── ssh_pair.rs      # SSH key pair + pairing QR payload
+    ├── ssh_send.rs      # SFTP client used to push files to peers
+    ├── ssh_server.rs    # Embedded SSH server (SFTP receive, pairing)
+    ├── transfer_progress.rs # In-progress transfer tracking/cancel
     └── upload_gate.rs   # Bridges upload confirmations to the UI thread
 ```
 
@@ -103,20 +117,20 @@ to be installed (handled by the `windows-reactor-setup` build dependency).
 
 ## Configuration
 
-- **HTTP port:** `tools::server::HTTP_PORT` (default `8000`).
-- **Directory listing:** opt-in. It is disabled by default; enable it later by
-  wiring `tools::server::set_list_directories(true)` into the UI.
-- **Persistence:** settings (last-opened folder, theme) are stored in
-  `%LOCALAPPDATA%\tumbleweed\settings.ini`; transfer history is stored in
-  `%LOCALAPPDATA%\tumbleweed\history.txt`.
+- **SSH port:** `tools::ssh_server::SSH_PORT` (default `2222`).
+- **Persistence:** settings (last-opened folder, theme, mDNS toggle) are
+  stored in `%LOCALAPPDATA%\tumbleweed\settings.ini`; transfer history in
+  `%LOCALAPPDATA%\tumbleweed\history.txt`; the SSH identity and
+  `authorized_keys` live in the app's folder (`%LOCALAPPDATA%\Tumbleweed`).
 
 ## Security notes
 
-- The HTTP server is **cleartext and unauthenticated** — intended for trusted
-  LANs only. Do not expose it to the public internet.
+- Transfer and pairing traffic is **SSH**, but it is intended for **trusted
+  LANs only** — do not expose port 2222 to the public internet.
+- The SSH server only accepts clients whose public key is in its
+  `authorized_keys`; the QR's one-time token bootstraps that the first time.
 - Incoming files are only written after you confirm and pick a destination,
   so the server never writes blindly.
-- The `..` path traversal is rejected on the server side.
 
 ## CI / releases
 
