@@ -1,45 +1,5 @@
 use windows_reactor::*;
 
-/// A reusable settings card: icon on the left (column 0), title over caption
-/// (column 1), and an optional trailing control such as a `ComboBox` on the
-/// right (column 2). Future settings can build their rows with this layout.
-pub(crate) fn simple_card(
-    icon: &str,
-    title: impl Into<String>,
-    caption: impl Into<String>,
-    trailing: impl Into<Element>,
-) -> Element {
-     border(
-        grid((
-            TextBlock::new(icon)
-                .font_family("Segoe Fluent Icons")
-                .font_size(20.0)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0),
-            grid((
-                text_block::body(title).grid_row(0),
-                text_block::caption(caption).grid_row(1),
-            ))
-            .rows([GridLength::Auto, GridLength::Auto])
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(1),
-            trailing
-                .into()
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(2),
-        ))
-        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
-        .column_spacing(12.0)
-        .padding(Thickness::uniform(16.0)),
-    )
-    .corner_radius(4.0)
-    // Card fill: ControlFillColorDefaultBrush; stroke: CardStrokeColorDefaultBrush.
-    .background(ThemeRef::ControlFill)
-    .border_brush(ThemeRef::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
-    .into()
-}
-
 /// The Settings page. It renders inside the app's shared [`RenderCx`] (the same
 /// one every page uses); any shared state is owned by `app` and passed in.
 pub(crate) fn settings_page(
@@ -71,17 +31,9 @@ pub(crate) fn settings_page(
         }
     });
 
-    let ssh_title = TextBlock::new("SSH pairing")
-        .font_size(20.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 16.0,
-            right: 0.0,
-            bottom: 4.0,
-        });
-
-    let ssh_card = simple_card(
+    let ssh_card = crate::controls::simple_card(
         "\u{E72E}", // shield / lock
+        20.0,
         "SSH key pair",
         "Generate an SSH key pair so your phone can pair with this PC.",
         button("Generate key pair").on_click({
@@ -188,18 +140,11 @@ pub(crate) fn settings_page(
     };
 
     // ---- Discovery section ----
-    let discovery_title = TextBlock::new("Discovery")
-        .font_size(20.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 16.0,
-            right: 0.0,
-            bottom: 4.0,
-        });
     // Live toggle for mDNS advertising + discovery, persisted in settings.
     let (mdns_on, set_mdns_on) = cx.use_state(crate::tools::mdns::mdns_enabled());
-    let mdns_card = simple_card(
+    let mdns_card = crate::controls::simple_card(
         "\u{E701}", // Wifi
+        20.0,
         "mDNS discovery",
         "Advertise this PC and find nearby Tumbleweed devices on your network.",
         ToggleSwitch::new(mdns_on).on_toggled({
@@ -213,23 +158,16 @@ pub(crate) fn settings_page(
     );
 
     // ---- Appearance section ----
-    let appearance_title = TextBlock::new("Appearance")
-        .font_size(20.0)
-        .margin(Thickness {
-            left: 0.0,
-            top: 16.0,
-            right: 0.0,
-            bottom: 4.0,
-        });
     // Theme ComboBox: Follow system / Light / Dark.
     let theme_index = match theme {
         RequestedTheme::Light => 1,
         RequestedTheme::Dark => 2,
         _ => 0,
     };
-    let theme_card = simple_card(
+    let theme_card = crate::controls::simple_card(
         "\u{E790}",
-        "Appearance",
+        20.0,
+        "Theme",
         "Choose the color theme for this app.",
         ComboBox::new(["Follow system", "Light", "Dark"])
             .selected_index(theme_index)
@@ -248,12 +186,9 @@ pub(crate) fn settings_page(
 
     // The cards live inside the scroll view; the page title sits above them.
     let card_stack: Element = vstack((
-        ssh_title,
-        ssh_card,
-        discovery_title,
-        mdns_card,
-        appearance_title,
-        theme_card,
+        crate::controls::section("SSH pairing", vec![ssh_card]),
+        crate::controls::section("Discovery", vec![mdns_card]),
+        crate::controls::section("Appearance", vec![theme_card]),
     ))
     .spacing(8.0)
     .into();

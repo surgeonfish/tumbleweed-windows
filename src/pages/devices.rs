@@ -15,7 +15,8 @@ pub(crate) fn kind_icon(kind: &str) -> &'static str {
 
 /// A card describing one device in three columns: icon | name + IP | version.
 /// `online` (Some) appends an Online/Offline indicator to the trailing column,
-/// used for paired devices to show their SSH reachability.
+/// used for paired devices to show their SSH reachability. The shell is the
+/// shared `simple_card`; only the icon size (28px) and trailing differ.
 fn device_card(
     name: &str,
     kind: &str,
@@ -48,35 +49,13 @@ fn device_card(
                 .into(),
         );
     }
-    border(
-        grid((
-            TextBlock::new(kind_icon(kind))
-                .font_family("Segoe Fluent Icons")
-                .font_size(28.0)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0),
-            grid((
-                body(name).grid_row(0),
-                caption(ips.join(", ")).grid_row(1),
-            ))
-            .rows([GridLength::Auto, GridLength::Auto])
-            .vertical_alignment(VerticalAlignment::Center)
-            .grid_column(1),
-            hstack(trailing)
-                .spacing(4.0)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(2),
-        ))
-        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
-        .column_spacing(12.0)
-        .padding(Thickness::uniform(16.0)),
+    crate::controls::simple_card(
+        kind_icon(kind),
+        20.0,
+        name,
+        ips.join(", "),
+        hstack(trailing).spacing(4.0),
     )
-    .corner_radius(4.0)
-    // Card fill: ControlFillColorDefaultBrush; stroke: CardStrokeColorDefaultBrush.
-    .background(ThemeRef::ControlFill)
-    .border_brush(ThemeRef::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
-    .into()
 }
 
 /// A card for a discovered peer, with the kind/version from its mDNS TXT
@@ -113,51 +92,49 @@ pub(crate) fn devices_page(
         .iter()
         .partition(|d| paired_ips.iter().any(|ip| ip == &d.ip.to_string()));
 
-    // Section headers live above each group; all cards go into one vstack.
-    let mut children: Vec<Element> = Vec::new();
-    children.push(body_strong("This device").into());
-    children.push(this_card);
+    // Each group is a titled section; the shared `section` widget renders the
+    // heading and its cards together.
+    let mut sections: Vec<Element> = Vec::new();
+    sections.push(crate::controls::section("This device", vec![this_card]));
 
     if !paired.is_empty() {
-        children.push(body_strong("Paired devices").into());
-        for d in paired {
-            let on = online.get(&d.ip.to_string()).copied();
-            children.push(peer_card(d, on));
-        }
+        let cards: Vec<Element> = paired
+            .into_iter()
+            .map(|d| peer_card(d, online.get(&d.ip.to_string()).copied()))
+            .collect();
+        sections.push(crate::controls::section("Paired devices", cards));
     }
 
-    children.push(body_strong("New devices").into());
-    if new.is_empty() {
-        children.push(
+    let new_cards: Vec<Element> = if new.is_empty() {
+        vec![
             TextBlock::new("No new devices found on the LAN.")
                 .font_size(13.0)
                 .foreground(Color { a: 255, r: 150, g: 150, b: 150 })
                 .padding(Thickness::uniform(8.0))
                 .into(),
-        );
+        ]
     } else {
-        for d in new {
-            children.push(peer_card(d, None));
-        }
-    }
+        new.into_iter().map(|d| peer_card(d, None)).collect()
+    };
+    sections.push(crate::controls::section("New devices", new_cards));
 
-    let stack: Element = vstack(children).spacing(8.0).into();
+    let stack: Element = vstack(sections).spacing(8.0).into();
     let scroll: Element = scroll_view(stack).into();
 
     vstack((
-            title("Devices").margin(Thickness {
-                left: 0.0,
-                top: 0.0,
-                right: 0.0,
-                bottom: 12.0,
-            }),
-            scroll
-        ))
-        .margin(Thickness {
-            left: 36.0,
-            right: 36.0,
-            top: 24.0,
-            bottom: 0.0,
-        })
-        .into()
+        title("Devices").margin(Thickness {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 12.0,
+        }),
+        scroll
+    ))
+    .margin(Thickness {
+        left: 36.0,
+        right: 36.0,
+        top: 24.0,
+        bottom: 0.0,
+    })
+    .into()
 }

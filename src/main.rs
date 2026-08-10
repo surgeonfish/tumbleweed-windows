@@ -5,6 +5,7 @@
 use std::time::Duration;
 use windows_reactor::*;
 
+mod controls;
 mod pages;
 mod tools;
 use pages::devices::devices_page;
@@ -334,6 +335,7 @@ fn app(cx: &mut RenderCx) -> Element {
             .pane_display_mode(NavigationViewPaneDisplayMode::Left)
             .back_button_visible(false)
             .pane_toggle_button_visible(true)
+            .open_pane_length(200.0)
             .settings_visible(true)
             .grid_row(1),
         dialog.grid_row(1),
