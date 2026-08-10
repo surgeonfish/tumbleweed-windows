@@ -146,25 +146,30 @@ pub(crate) fn settings_page(
     );
 
     // ---- Appearance section ----
-    // Theme ComboBox: Follow system / Light / Dark.
-    let theme_index = match theme {
-        RequestedTheme::Light => 1,
-        RequestedTheme::Dark => 2,
-        _ => 0,
+    // Theme selector: a drop-down button whose menu offers Follow system /
+    // Light / Dark; persisted in settings.
+    let theme_label = match theme {
+        RequestedTheme::Light => "Light",
+        RequestedTheme::Dark => "Dark",
+        _ => "System",
     };
     let theme_card = crate::controls::simple_card(
         "\u{E790}",
         20.0,
         "Theme",
         "Choose the color theme for this app.",
-        ComboBox::new(["Follow system", "Light", "Dark"])
-            .selected_index(theme_index)
-            .on_selection_changed({
+        drop_down_button(theme_label)
+            .menu_flyout(vec![
+                menu_item("System"),
+                menu_item("Light"),
+                menu_item("Dark"),
+            ])
+            .on_item_clicked({
                 let set_theme = set_theme.clone();
-                move |idx: i32| {
-                    let next = match idx {
-                        1 => RequestedTheme::Light,
-                        2 => RequestedTheme::Dark,
+                move |label: String| {
+                    let next = match label.as_str() {
+                        "Light" => RequestedTheme::Light,
+                        "Dark" => RequestedTheme::Dark,
                         _ => RequestedTheme::Default,
                     };
                     set_theme.call(next);
