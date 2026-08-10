@@ -42,11 +42,73 @@ pub(crate) fn settings_page(
         }),
     );
 
+    // Shared layout for the QR slot: the QR (or its placeholder) in column 0,
+    // the key pair status in column 1, and the meta info in column 2. Both
+    // the no-key-pair placeholder and the real code use this grid so the slot
+    // never jumps around between states.
+    let qr_grid = |qr_el: Element, key_status: &str, meta: &str| -> Element {
+        grid((
+            qr_el.grid_column(0),
+            hstack((
+                TextBlock::new("\u{E8D7}")
+                    .font_family("Segoe Fluent Icons")
+                    .font_size(16.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .grid_column(0),
+                vstack((
+                    body_strong("Key Pair"),
+                    caption(key_status)
+                ))
+                .spacing(4.0)
+                .vertical_alignment(VerticalAlignment::Center),
+            ))
+            .spacing(8.0)
+            .horizontal_alignment(HorizontalAlignment::Right)
+            .grid_column(1),
+            hstack((
+                TextBlock::new("\u{E928}")
+                    .font_family("Segoe Fluent Icons")
+                    .font_size(16.0)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .grid_column(0),
+                vstack((
+                    body_strong("Meta"),
+                    caption(meta)
+                ))
+                .spacing(4.0)
+                .vertical_alignment(VerticalAlignment::Center),
+            ))
+            .spacing(8.0)
+            .horizontal_alignment(HorizontalAlignment::Right)
+            .grid_column(2),
+        ))
+        .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
+        .column_spacing(40.0)
+        .into()
+    };
+
     let qr_child: Element = match &pairing.1 {
-        None => text_block::caption(
-            "Tap \"Generate key pair\" first, then expand this to see the QR code.",
-        )
-        .into(),
+        None => {
+            // Before a key pair exists, show an empty QR placeholder (finder
+            // patterns only) in the same grid as the real code, so the slot
+            // still reads as a QR code. Keyed by accent/theme like the real
+            // QR so it repaints when the color scheme changes.
+            let size_dips = crate::tools::qr_surface::placeholder_qr_size();
+            let qr_el: Element = canvas(move |ctx| {
+                crate::tools::qr_surface::draw_placeholder_qr(ctx)
+            })
+            .with_key(format!(
+                "qr-empty-{accent_gen}-{}",
+                matches!(
+                    current_color_scheme(),
+                    windows_reactor::ColorScheme::Dark
+                )
+            ))
+            .width(size_dips)
+            .height(size_dips)
+            .into();
+            qr_grid(qr_el, "Not generated", "—")
+        }
         Some(info) if info.error.is_some() => {
             text_block::caption(info.error.clone().unwrap_or_default()).into()
         }
@@ -85,50 +147,12 @@ pub(crate) fn settings_page(
                 info.ip.as_deref().unwrap_or(""),
                 info.version.as_deref().unwrap_or(""),
             );
-            grid((
-                // QR code is in column 0, the key pair info is in column 1,
-                // and the meta info is in column 2.
-                qr_el.grid_column(0),
-                hstack((
-                    TextBlock::new("\u{E8D7}")
-                        .font_family("Segoe Fluent Icons")
-                        .font_size(16.0)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(0),
-                    vstack((
-                        body_strong("Key Pair"),
-                        caption(if crate::tools::ssh_pair::has_keypair() {
-                            "Generated"
-                        } else {
-                            "Not generated"
-                        })
-                    ))
-                    .spacing(4.0)
-                    .vertical_alignment(VerticalAlignment::Center),
-                ))
-                .spacing(8.0)
-                .horizontal_alignment(HorizontalAlignment::Right)
-                .grid_column(1),
-                hstack((
-                    TextBlock::new("\u{E928}")
-                        .font_family("Segoe Fluent Icons")
-                        .font_size(16.0)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(0),
-                    vstack((
-                        body_strong("Meta"),
-                        caption(meta)
-                    ))
-                    .spacing(4.0)
-                    .vertical_alignment(VerticalAlignment::Center),
-                ))
-                .spacing(8.0)
-                .horizontal_alignment(HorizontalAlignment::Right)
-                .grid_column(2),
-            ))
-            .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto])
-            .column_spacing(40.0)
-            .into()
+            let key_status = if crate::tools::ssh_pair::has_keypair() {
+                "Generated"
+            } else {
+                "Not generated"
+            };
+            qr_grid(qr_el, key_status, &meta)
         }
     };
 

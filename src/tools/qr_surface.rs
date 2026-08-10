@@ -20,6 +20,10 @@ use windows_reactor::{ColorScheme, DrawContext, Result, current_color_scheme};
 const QUIET: f32 = 4.0;
 /// DIPs per module — 2 keeps the QR compact but still crisp and scannable.
 const SCALE: f32 = 2.0;
+/// Module size of the placeholder QR shown before a key pair exists. Chosen
+/// near the middle of typical QR versions so the placeholder reads at roughly
+/// the same on-screen scale as the real code.
+const PLACEHOLDER_SIZE: usize = 53;
 
 /// The app's accent color (Windows Settings -> Personalization) as a
 /// Direct2D color, so the QR modules match the app's accent. Falls back to
@@ -77,5 +81,59 @@ pub(crate) fn draw_qr(ctx: &DrawContext, matrix: &[bool], size: usize) -> Result
 /// Total on-screen size of the QR in DIPs, for sizing the canvas widget.
 pub(crate) fn qr_size(size: usize) -> f64 {
     (size as f64 + 2.0 * QUIET as f64) * SCALE as f64
+}
+
+/// Draw an "empty QR" placeholder: a ControlFill background with only the
+/// three position-detection (finder) patterns, in a faded accent. Used before
+/// a key pair exists so the QR slot still reads as a QR code rather than
+/// showing bare text.
+pub(crate) fn draw_placeholder_qr(ctx: &DrawContext) -> Result<()> {
+    let size = PLACEHOLDER_SIZE;
+    ctx.clear(control_fill_color());
+    // Faded accent: the placeholder is a hint, not a scannable code.
+    let mut c = accent_color();
+    c.a = 0.35;
+    let brush = ctx.create_solid_brush(c)?;
+    let finder = |fx: usize, fy: usize| {
+        // Outer 7x7 ring (one-module border).
+        for i in 0..7 {
+            for j in 0..7 {
+                if i == 0 || i == 6 || j == 0 || j == 6 {
+                    ctx.fill_rect(
+                        &Rect::new(
+                            (QUIET + (fx + i) as f32) * SCALE,
+                            (QUIET + (fy + j) as f32) * SCALE,
+                            (QUIET + (fx + i) as f32 + 1.0) * SCALE,
+                            (QUIET + (fy + j) as f32 + 1.0) * SCALE,
+                        ),
+                        &brush,
+                    );
+                }
+            }
+        }
+        // Center 3x3 solid.
+        for i in 2..5 {
+            for j in 2..5 {
+                ctx.fill_rect(
+                    &Rect::new(
+                        (QUIET + (fx + i) as f32) * SCALE,
+                        (QUIET + (fy + j) as f32) * SCALE,
+                        (QUIET + (fx + i) as f32 + 1.0) * SCALE,
+                        (QUIET + (fy + j) as f32 + 1.0) * SCALE,
+                    ),
+                    &brush,
+                );
+            }
+        }
+    };
+    finder(0, 0);
+    finder(size - 7, 0);
+    finder(0, size - 7);
+    Ok(())
+}
+
+/// On-screen size of the placeholder QR in DIPs, for sizing the canvas widget.
+pub(crate) fn placeholder_qr_size() -> f64 {
+    qr_size(PLACEHOLDER_SIZE)
 }
 
