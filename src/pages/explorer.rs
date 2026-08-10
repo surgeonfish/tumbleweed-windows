@@ -59,6 +59,15 @@ fn list_entries(path: &Path) -> Vec<FsEntry> {
     out
 }
 
+/// All mounted drive roots on this machine (e.g. `["C:\\", "D:\\"]`), found
+/// by probing every drive letter.
+fn drive_roots() -> Vec<String> {
+    (b'A'..=b'Z')
+        .map(|c| format!("{}:\\", c as char))
+        .filter(|p| Path::new(p).is_dir())
+        .collect()
+}
+
 /// `C:\Users\Anna\Downloads` -> `["C:", "Users", "Anna", "Downloads"]`.
 fn path_to_crumbs(path: &Path) -> Vec<String> {
     path.components()
@@ -200,6 +209,23 @@ pub(crate) fn explorer_page(
         }
     });
 
+    // Drive selector: lists this machine's mounted volumes so the user can
+    // jump straight to another drive.
+    let current_drive = data.crumbs.first().cloned().unwrap_or_default();
+    let drive_items: Vec<MenuItemDef> = drive_roots()
+        .iter()
+        .map(|root| menu_item(root.trim_end_matches('\\')))
+        .collect();
+    let drive_picker: Element = drop_down_button(current_drive)
+        .menu_flyout(drive_items)
+        .on_item_clicked({
+            let set_current_path = set_current_path.clone();
+            move |label: String| {
+                set_current_path.call(PathBuf::from(format!("{label}\\")));
+            }
+        })
+        .into();
+
     let tool_bar = hstack((
         button("")
             // Refresh glyph (Segoe Fluent Icons).
@@ -208,6 +234,8 @@ pub(crate) fn explorer_page(
                 let set_explorer_refresh = set_explorer_refresh.clone();
                 move || set_explorer_refresh.call(explorer_refresh + 1)
             }),
+        // Match the refresh button's height.
+        drive_picker.height(34.0),
         border(breadcrumb)
             .padding(Thickness::xy(8.0, 2.0))
             .corner_radius(4.0)
