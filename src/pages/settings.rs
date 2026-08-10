@@ -1,35 +1,24 @@
 use windows_reactor::*;
 
 /// The Settings page. It renders inside the app's shared [`RenderCx`] (the same
-/// one every page uses); any shared state is owned by `app` and passed in.
+/// one every page uses); any shared state is owned by `app` and passed in. This
+/// page deliberately creates no hooks of its own: every page shares one
+/// positional hook cursor, so a page function creating hooks (as this one used
+/// to) collided with the other pages and made navigation away from Settings
+/// flaky.
 pub(crate) fn settings_page(
-    cx: &mut RenderCx,
+    _cx: &mut RenderCx,
     theme: RequestedTheme,
     set_theme: SetState<RequestedTheme>,
     accent_gen: u32,
+    pairing: &(u64, Option<crate::tools::ssh_pair::PairingInfo>),
+    set_pairing: AsyncSetState<(u64, Option<crate::tools::ssh_pair::PairingInfo>)>,
+    mdns_on: bool,
+    set_mdns_on: SetState<bool>,
 ) -> Element {
-    // ---- SSH pairing section ----
-    // State: (generation counter, pairing result). The counter is bumped on
-    // every generation so the QR image element gets a fresh key and re-renders.
-    // use_async_state: its setter is Send, so it can be called from the
-    // background thread that does the keygen + QR work.
-    let (pairing, set_pairing) =
-        cx.use_async_state((0u64, None::<crate::tools::ssh_pair::PairingInfo>));
+    // The pairing generation counter is bumped on every regeneration so the QR
+    // image element gets a fresh key and re-renders.
     let generation = pairing.0;
-
-    // On page load, if a key pair already exists in the app's folder, load it
-    // and show its QR without requiring the user to regenerate.
-    cx.use_effect((), {
-        let set_pairing = set_pairing.clone();
-        move || {
-            if crate::tools::ssh_pair::has_keypair() {
-                std::thread::spawn(move || {
-                    let info = crate::tools::ssh_pair::build_pairing_info();
-                    set_pairing.call((1u64, Some(info)));
-                });
-            }
-        }
-    });
 
     let ssh_card = crate::controls::simple_card(
         "\u{E72E}", // shield / lock
@@ -141,7 +130,6 @@ pub(crate) fn settings_page(
 
     // ---- Discovery section ----
     // Live toggle for mDNS advertising + discovery, persisted in settings.
-    let (mdns_on, set_mdns_on) = cx.use_state(crate::tools::mdns::mdns_enabled());
     let mdns_card = crate::controls::simple_card(
         "\u{E701}", // Wifi
         20.0,

@@ -213,6 +213,30 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
+    // Settings page state. These live at app level (like Explorer's state)
+    // because every page shares one positional hook cursor: a page function
+    // creating its own hooks would collide with the other pages and made
+    // navigating away from Settings flaky (showing stale Settings content).
+    // Pairing = (generation counter, pairing result); the counter is bumped
+    // on every regeneration so the QR element gets a fresh key and re-renders.
+    let (pairing, set_pairing) =
+        cx.use_async_state((0u64, None::<crate::tools::ssh_pair::PairingInfo>));
+    // Preload an existing key pair once at startup, so the Settings QR is
+    // ready without requiring a regeneration.
+    cx.use_effect((), {
+        let set_pairing = set_pairing.clone();
+        move || {
+            if crate::tools::ssh_pair::has_keypair() {
+                std::thread::spawn(move || {
+                    let info = crate::tools::ssh_pair::build_pairing_info();
+                    set_pairing.call((1u64, Some(info)));
+                });
+            }
+        }
+    });
+    // Live toggle for mDNS advertising + discovery, persisted in settings.
+    let (mdns_on, set_mdns_on) = cx.use_state(crate::tools::mdns::mdns_enabled());
+
     // Selected sub-tab on the Transfer page (All / Downloads / Uploads).
     let (transfer_tab, set_transfer_tab) = cx.use_state("all".to_string());
 
@@ -282,7 +306,16 @@ fn app(cx: &mut RenderCx) -> Element {
             env!("CARGO_PKG_VERSION"),
             &paired_online.1,
         ),
-        _ => settings_page(cx, theme, set_theme.clone(), accent_gen),
+        _ => settings_page(
+            cx,
+            theme,
+            set_theme.clone(),
+            accent_gen,
+            &pairing,
+            set_pairing.clone(),
+            mdns_on,
+            set_mdns_on.clone(),
+        ),
     };
 
     // Confirm incoming uploads (front of the queue): show a dialog; if
