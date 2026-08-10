@@ -225,7 +225,10 @@ pub(crate) fn explorer_page(
             })
             .collect();
         let upload = button("")
-            .icon(Symbol::Upload)
+            .icon(Icon::font_family(
+                "\u{E72D}",
+                "Segoe Fluent Icons",
+            ))
             .subtle()
             .enabled(is_selected)
             .opacity(if is_selected { 1.0 } else { 0.0 })
