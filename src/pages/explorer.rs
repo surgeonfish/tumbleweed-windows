@@ -174,6 +174,8 @@ pub(crate) enum UploadOutcome {
 pub(crate) fn explorer_page(
     _cx: &mut RenderCx,
     set_current_path: SetState<PathBuf>,
+    explorer_refresh: u32,
+    set_explorer_refresh: SetState<u32>,
     data: &ExplorerData,
     devices: &[DiscoveredDevice],
     selected_index: Option<usize>,
@@ -197,6 +199,23 @@ pub(crate) fn explorer_page(
             crumb_set.call(target);
         }
     });
+
+    let tool_bar = hstack((
+        button("")
+            // Refresh glyph (Segoe Fluent Icons).
+            .icon(Icon::font_family("\u{E8F7}", "Segoe Fluent Icons"))
+            .on_click({
+                let set_explorer_refresh = set_explorer_refresh.clone();
+                move || set_explorer_refresh.call(explorer_refresh + 1)
+            }),
+        border(breadcrumb)
+            .padding(Thickness::xy(8.0, 2.0))
+            .corner_radius(4.0)
+            .background(ThemeRef::ControlFill)
+            .border_brush(ThemeRef::ControlStroke)
+            .border_thickness(Thickness::uniform(1.0)),
+    ))
+    .spacing(8.0);
 
     // Selecting a folder in the list navigates into it. Each row has a
     // reveal-on-hover upload button.
@@ -349,7 +368,7 @@ pub(crate) fn explorer_page(
                 bottom: 12.0,
             })
             .grid_row(0),
-        breadcrumb.grid_row(1),
+        tool_bar.grid_row(1),
         list.grid_row(2),
         outcome_bar.grid_row(3),
     ))

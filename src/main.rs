@@ -31,6 +31,10 @@ fn app(cx: &mut RenderCx) -> Element {
     let default = cx.use_memo((), || default_folder());
     let (current_path, set_current_path) = cx.use_state(default.clone());
 
+    // Bumped by the Explorer page's refresh button so the listing re-reads the
+    // current folder on demand.
+    let (explorer_refresh, set_explorer_refresh) = cx.use_state(0u32);
+
     // Persist the folder and keep the SSH (SFTP) server pointing at the same
     // folder the user is currently exploring.
     cx.use_effect((current_path.clone(),), {
@@ -44,8 +48,11 @@ fn app(cx: &mut RenderCx) -> Element {
         }
     });
 
-    // Listing + breadcrumbs recompute only when the folder changes.
-    let data = cx.use_memo((current_path.clone(),), || view_data(&current_path));
+    // Listing + breadcrumbs recompute when the folder changes or the refresh
+    // button is tapped (explorer_refresh bump).
+    let data = cx.use_memo((current_path.clone(), explorer_refresh), || {
+        view_data(&current_path)
+    });
 
     // Explorer's selected row (reveals its upload button) and the last-tap
     // time used for double-click folder navigation. These live at app level
@@ -291,6 +298,8 @@ fn app(cx: &mut RenderCx) -> Element {
         "explorer" => explorer_page(
             cx,
             set_current_path.clone(),
+            explorer_refresh,
+            set_explorer_refresh.clone(),
             &data,
             &devices,
             selected_index,
